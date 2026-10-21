@@ -890,6 +890,16 @@ class DeviceSimulatorAdapter:
             })
 
         device = self.devices.get(receipt.device_id)
+        if device and not device.is_online:
+            return UndoResultDict({
+                "success": False,
+                "error": "device_offline",
+                "offline": True,
+                "message": f"Device {receipt.device_id} is offline / unreachable; cannot reverse action",
+                "device_id": receipt.device_id,
+                "details": {"offline": True},
+            })
+
         if device:
             # Restore previous state
             device.state = receipt.previous_state

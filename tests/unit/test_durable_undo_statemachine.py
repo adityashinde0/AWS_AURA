@@ -40,6 +40,9 @@ def test_undo_state_transition_lifecycle(store: InMemoryDataStore):
     store.undo_records[token] = {
         "token": token,
         "user_id": user_id,
+        "userId": user_id,
+        "tenant_id": "tenant_default",
+        "tenantId": "tenant_default",
         "action_id": "act_001",
         "action_type": "request_pause",
         "status": "PENDING",
@@ -51,6 +54,7 @@ def test_undo_state_transition_lifecycle(store: InMemoryDataStore):
     store.audit_records.append({
         "action_id": "act_001",
         "user_id": user_id,
+        "tenant_id": "tenant_default",
         "action_type": "request_pause",
         "target_device": "dev_firetv_living_room",
         "status": "executed",
@@ -59,7 +63,7 @@ def test_undo_state_transition_lifecycle(store: InMemoryDataStore):
     })
 
     # Execute undo
-    res = handle_undo_action({"user_id": user_id, "undo_token": token}, store=store)
+    res = handle_undo_action({"user_id": user_id, "tenant_id": "tenant_default", "undo_token": token}, store=store)
     assert res["statusCode"] == 200
     data = json.loads(res["body"])
     assert data["success"] is True
@@ -81,13 +85,16 @@ def test_idempotent_replay_on_succeeded(store: InMemoryDataStore):
     store.undo_records[token] = {
         "token": token,
         "user_id": user_id,
+        "userId": user_id,
+        "tenant_id": "tenant_default",
+        "tenantId": "tenant_default",
         "status": "SUCCEEDED",
         "created_at": now - 100,
         "expires_at": now + 500,
     }
     store.undone_tokens.add(token)
 
-    res = handle_undo_action({"user_id": user_id, "undo_token": token}, store=store)
+    res = handle_undo_action({"user_id": user_id, "tenant_id": "tenant_default", "undo_token": token}, store=store)
     assert res["statusCode"] == 200
     data = json.loads(res["body"])
     assert data["success"] is True
@@ -108,13 +115,17 @@ def test_concurrent_undo_in_progress_returns_409(store: InMemoryDataStore):
     store.undo_records[token] = {
         "token": token,
         "user_id": user_id,
+        "userId": user_id,
+        "tenant_id": "tenant_default",
+        "tenantId": "tenant_default",
         "status": "IN_PROGRESS",
         "created_at": now - 10,
         "lease_expires_at": now + 20.0,
+        "leaseExpiresAt": int(now + 20),
         "expires_at": now + 600,
     }
 
-    res = handle_undo_action({"user_id": user_id, "undo_token": token}, store=store)
+    res = handle_undo_action({"user_id": user_id, "tenant_id": "tenant_default", "undo_token": token}, store=store)
     assert res["statusCode"] == 409
     data = json.loads(res["body"])
     assert data["error"] == "undo_in_progress"
@@ -134,14 +145,19 @@ def test_expired_lease_reacquired_and_completed(store: InMemoryDataStore):
     store.undo_records[token] = {
         "token": token,
         "user_id": user_id,
+        "userId": user_id,
+        "tenant_id": "tenant_default",
+        "tenantId": "tenant_default",
         "status": "IN_PROGRESS",
         "created_at": now - 60,
         "lease_expires_at": now - 10.0,  # Expired lease
+        "leaseExpiresAt": int(now - 10),
         "expires_at": now + 600,
     }
     store.audit_records.append({
         "action_id": "act_lease_004",
         "user_id": user_id,
+        "tenant_id": "tenant_default",
         "action_type": "request_pause",
         "status": "executed",
         "undo_token": token,
@@ -149,7 +165,7 @@ def test_expired_lease_reacquired_and_completed(store: InMemoryDataStore):
     })
 
     # Next attempt acquires lease and succeeds
-    res = handle_undo_action({"user_id": user_id, "undo_token": token}, store=store)
+    res = handle_undo_action({"user_id": user_id, "tenant_id": "tenant_default", "undo_token": token}, store=store)
     assert res["statusCode"] == 200
     assert store.undo_records[token]["status"] == "SUCCEEDED"
 
@@ -166,6 +182,9 @@ def test_device_offline_failure_reported_honestly_as_retryable(store: InMemoryDa
     store.undo_records[token] = {
         "token": token,
         "user_id": user_id,
+        "userId": user_id,
+        "tenant_id": "tenant_default",
+        "tenantId": "tenant_default",
         "action_id": "act_005",
         "action_type": "request_pause",
         "status": "PENDING",
@@ -175,6 +194,7 @@ def test_device_offline_failure_reported_honestly_as_retryable(store: InMemoryDa
     store.audit_records.append({
         "action_id": "act_005",
         "user_id": user_id,
+        "tenant_id": "tenant_default",
         "action_type": "request_pause",
         "status": "executed",
         "undo_token": token,
@@ -186,7 +206,7 @@ def test_device_offline_failure_reported_honestly_as_retryable(store: InMemoryDa
     store.device_adapter.execute_undo = lambda tok: {"success": False, "error": "device_offline"}
 
     try:
-        res = handle_undo_action({"user_id": user_id, "undo_token": token}, store=store)
+        res = handle_undo_action({"user_id": user_id, "tenant_id": "tenant_default", "undo_token": token}, store=store)
         assert res["statusCode"] == 502
         data = json.loads(res["body"])
         assert data["success"] is False
@@ -211,12 +231,15 @@ def test_cross_user_undo_attempt_blocked(store: InMemoryDataStore):
     store.undo_records[token] = {
         "token": token,
         "user_id": "usr_elena",
+        "userId": "usr_elena",
+        "tenant_id": "tenant_default",
+        "tenantId": "tenant_default",
         "status": "PENDING",
         "created_at": now,
         "expires_at": now + 600,
     }
 
-    attacker_res = handle_undo_action({"user_id": "usr_attacker", "undo_token": token}, store=store)
+    attacker_res = handle_undo_action({"user_id": "usr_attacker", "tenant_id": "tenant_default", "undo_token": token}, store=store)
     assert attacker_res["statusCode"] == 403
     data = json.loads(attacker_res["body"])
     assert data["error"] == "unauthorized"
@@ -234,12 +257,15 @@ def test_expired_undo_token_returns_410(store: InMemoryDataStore):
     store.undo_records[token] = {
         "token": token,
         "user_id": "usr_marcus",
+        "userId": "usr_marcus",
+        "tenant_id": "tenant_default",
+        "tenantId": "tenant_default",
         "status": "PENDING",
         "created_at": past,
         "expires_at": past + 300.0,  # Expired 100 seconds ago
     }
 
-    res = handle_undo_action({"user_id": "usr_marcus", "undo_token": token}, store=store)
+    res = handle_undo_action({"user_id": "usr_marcus", "tenant_id": "tenant_default", "undo_token": token}, store=store)
     assert res["statusCode"] == 410
     data = json.loads(res["body"])
     assert data["error"] == "undo_token_expired"

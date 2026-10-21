@@ -24,6 +24,15 @@ except Exception:
     _dynamodb = None
     _eventbridge = None
 
+import importlib
+try:
+    _auth = importlib.import_module("lambda.auth")
+except Exception:
+    try:
+        import auth as _auth
+    except Exception:
+        _auth = None
+
 CONNECTIONS_TABLE_NAME = os.getenv("AURA_CONNECTIONS_TABLE", "AuraWebSocketConnections")
 EVENT_BUS_NAME = os.getenv("AURA_EVENT_BUS", "aura-event-bus")
 PROHIBITED_RAW_KEYS = {"raw_audio", "full_transcript", "audio_blob", "unredacted_speech"}
@@ -54,62 +63,107 @@ def _log(level: str, event: str, **fields: Any) -> None:
 # ---------------------------------------------------------------------------
 
 def validate_connect_token(token: str | None) -> tuple[bool, dict[str, str]]:
-    """Validate bearer token format and extract subject claims.
+    """Cryptographically validate bearer token and extract verified subject claims.
 
-    In production this validates OIDC/JWT signatures against a JWKS endpoint.
-    For backward compatibility the stub path is preserved: tokens ≥ 16 chars
-    that do not contain the literal word "expired" are accepted, and
-    ``user_id`` is derived from the first 8 characters of the stripped token.
-
-    Hardening applied on top of the original implementation:
-    - ``None`` / empty / whitespace-only tokens are rejected immediately.
-    - The "Bearer " prefix is stripped before length checks.
-    - Any token containing the case-insensitive substring "expired" is rejected.
-    - Tokens shorter than 16 characters after prefix-stripping are rejected.
+    Verifies OIDC/Cognito JWT signatures against JWKS using RS256.
+    Ensures token has not expired and contains valid subject identity.
     """
     if not token or not token.strip():
         _log("WARNING", "token_validation_rejected", reason="empty_token")
         return False, {}
     token_str = token.strip()
-    if token_str.startswith("Bearer "):
-        token_str = token_str[7:]
-    if len(token_str) < 16:
-        _log("WARNING", "token_validation_rejected", reason="token_too_short",
-             token_length=len(token_str))
+    if token_str.lower().startswith("bearer "):
+        token_str = token_str[7:].strip()
+    if not token_str:
+        _log("WARNING", "token_validation_rejected", reason="empty_token")
         return False, {}
-    if "expired" in token_str.lower():
-        _log("WARNING", "token_validation_rejected", reason="token_expired")
-        return False, {}
-    claims = {"user_id": f"usr_{token_str[:8]}", "tenant_id": "tenant_default"}
-    _log("INFO", "token_validation_accepted", user_id=claims["user_id"])
-    return True, claims
+
+    if _auth is not None:
+        try:
+            claims = _auth.verify_and_decode_bearer_jwt(token_str)
+            user_id = str(claims.get("sub") or claims.get("cognito:username") or claims.get("username") or "")
+            tenant_id = str(claims.get("custom:tenant_id") or claims.get("tenant_id") or "tenant_default")
+            if not user_id:
+                _log("WARNING", "token_validation_rejected", reason="missing_subject_claim")
+                return False, {}
+            _log("INFO", "token_validation_accepted", user_id=user_id, tenant_id=tenant_id)
+            return True, {"user_id": user_id, "tenant_id": tenant_id}
+        except _auth.AuthError as err:
+            _log("WARNING", "token_validation_rejected", reason=err.error, message=err.message)
+            return False, {}
+        except Exception as exc:
+            _log("WARNING", "token_validation_rejected", reason="jwt_verification_failed", error=str(exc))
+            return False, {}
+
+    _log("ERROR", "token_validation_unavailable", reason="auth_module_unavailable")
+    return False, {}
 
 
 def handle_connect(event: dict[str, Any], table: Any = None) -> dict[str, Any]:
     connection_id = event.get("requestContext", {}).get("connectionId")
     query_params = event.get("queryStringParameters") or {}
     headers = event.get("headers") or {}
-    # Accept token from Authorization header only; query-string fallback retained
-    # for backward compatibility but flagged as the less-secure path.
-    header_token = headers.get("Authorization") or headers.get("authorization")
-    qs_token = query_params.get("auth_token")
-    token = header_token or qs_token
-    if qs_token and not header_token:
-        _log("WARNING", "connect_token_from_querystring",
-             connection_id=connection_id,
-             note="token in querystring appears in access logs; prefer Authorization header")
-
     correlation_id = str(uuid.uuid4())
-    valid, claims = validate_connect_token(token)
-    if not valid or not connection_id:
+
+    if not connection_id:
+        _log("WARNING", "connect_rejected", reason="missing_connection_id")
+        return {"statusCode": 403, "body": json.dumps({"error": "unauthorized", "message": "Valid connectionId required"})}
+
+    # 1. Prefer trusted API Gateway authorizer claims if present
+    authorizer = event.get("requestContext", {}).get("authorizer") or {}
+    auth_claims = authorizer.get("jwt", {}).get("claims") or authorizer.get("claims")
+    if isinstance(auth_claims, dict) and (auth_claims.get("sub") or auth_claims.get("cognito:username") or auth_claims.get("username")):
+        verified_user_id = str(auth_claims.get("sub") or auth_claims.get("cognito:username") or auth_claims.get("username"))
+        verified_tenant_id = str(auth_claims.get("custom:tenant_id") or auth_claims.get("tenant_id") or "tenant_default")
+    else:
+        # 2. Cryptographically verify token from Authorization header or query parameter
+        header_token = headers.get("Authorization") or headers.get("authorization")
+        qs_token = query_params.get("auth_token") or query_params.get("token")
+        token = header_token or qs_token
+        if qs_token and not header_token:
+            _log("WARNING", "connect_token_from_querystring",
+                 connection_id=connection_id,
+                 note="token in querystring appears in access logs; prefer Authorization header")
+
+        valid, claims = validate_connect_token(token)
+        if not valid:
+            _log("WARNING", "connect_rejected",
+                 correlation_id=correlation_id,
+                 connection_id=connection_id,
+                 reason="invalid_token")
+            return {"statusCode": 403, "body": json.dumps({"error": "unauthorized", "message": "Valid token required"})}
+
+        verified_user_id = claims.get("user_id")
+        verified_tenant_id = claims.get("tenant_id", "tenant_default")
+
+    if not verified_user_id:
         _log("WARNING", "connect_rejected",
              correlation_id=correlation_id,
              connection_id=connection_id,
-             reason="invalid_token_or_missing_connection_id")
-        return {"statusCode": 403, "body": json.dumps({"error": "unauthorized", "message": "Valid token required"})}
+             reason="missing_verified_user_id")
+        return {"statusCode": 403, "body": json.dumps({"error": "unauthorized", "message": "Valid user identity required"})}
 
-    user_id = query_params.get("user_id") or claims.get("user_id", "usr_unknown")
-    tenant_id = claims.get("tenant_id", "tenant_default")
+    # Untrusted client parameter checks: caller cannot override or mismatch verified identity
+    req_user_id = query_params.get("user_id")
+    if req_user_id and req_user_id != verified_user_id:
+        _log("WARNING", "connect_user_mismatch_rejected",
+             correlation_id=correlation_id,
+             connection_id=connection_id,
+             requested_user=req_user_id,
+             token_user=verified_user_id)
+        return {"statusCode": 403, "body": json.dumps({"error": "forbidden", "message": "Caller cannot bind connection to different user"})}
+
+    req_tenant_id = query_params.get("tenant_id")
+    if req_tenant_id and req_tenant_id != verified_tenant_id:
+        _log("WARNING", "connect_tenant_mismatch_rejected",
+             correlation_id=correlation_id,
+             connection_id=connection_id,
+             requested_tenant=req_tenant_id,
+             token_tenant=verified_tenant_id)
+        return {"statusCode": 403, "body": json.dumps({"error": "forbidden", "message": "Caller cannot bind connection to different tenant"})}
+
+    user_id = verified_user_id
+    tenant_id = verified_tenant_id
     now = time.time()
     ttl = int(now + 7200)  # 2 hours connection TTL
 
@@ -155,13 +209,52 @@ def handle_relay(
     body: dict[str, Any],
     bus_client: Any = None,
     bus_name: str = EVENT_BUS_NAME,
+    authenticated_user_id: str | None = None,
+    connection_id: str | None = None,
 ) -> dict[str, Any]:
-    """Process incoming relay envelope and return acknowledgement for outbox purging."""
+    """Process incoming relay envelope and return acknowledgement for outbox purging.
+
+    Binds the relay event to the authenticated connection user, blocking any
+    impersonation attempts where caller-supplied user_id mismatches authenticated identity.
+    """
     event_id = body.get("event_id")
     event_type = body.get("event_type")
-    user_id = body.get("user_id")
+    req_user_id = body.get("user_id")
     timestamp = body.get("timestamp") or time.time()
     correlation_id = str(uuid.uuid4())
+
+    # FAIL CLOSED: Reject relay requests whenever authenticated identity cannot be established
+    if not authenticated_user_id or not str(authenticated_user_id).strip():
+        _log("WARNING", "relay_unauthenticated_request",
+             correlation_id=correlation_id,
+             connection_id=connection_id,
+             reason="missing_authenticated_identity")
+        return {
+            "statusCode": 403,
+            "body": {
+                "error": "forbidden",
+                "message": "Authenticated identity could not be established for relay event",
+                "timestamp": time.time(),
+            },
+        }
+
+    # Impersonation guard: caller cannot claim a different identity than authenticated connection
+    if req_user_id and str(req_user_id).strip() != str(authenticated_user_id).strip():
+        _log("WARNING", "relay_user_impersonation_blocked",
+             correlation_id=correlation_id,
+             requested_user_id=req_user_id,
+             authenticated_user_id=authenticated_user_id,
+             connection_id=connection_id)
+        return {
+            "statusCode": 403,
+            "body": {
+                "error": "forbidden",
+                "message": f"Caller '{req_user_id}' cannot impersonate authenticated user '{authenticated_user_id}'",
+                "timestamp": time.time(),
+            },
+        }
+
+    user_id = str(authenticated_user_id).strip()
 
     # Schema validation
     if not event_id or not event_type or not user_id:
@@ -325,7 +418,79 @@ def lambda_handler(
 
     action = raw_body.get("action")
     if route_key == "relay" or action == "relay":
-        res = handle_relay(raw_body, bus_client=bus)
+        connection_id = event.get("requestContext", {}).get("connectionId")
+        authenticated_user_id = None
+
+        # Check API Gateway authorizer context first
+        authorizer = event.get("requestContext", {}).get("authorizer") or {}
+        auth_claims = (
+            authorizer.get("jwt", {}).get("claims")
+            or authorizer.get("claims")
+        )
+        if isinstance(auth_claims, dict):
+            authenticated_user_id = (
+                auth_claims.get("sub")
+                or auth_claims.get("cognito:username")
+                or auth_claims.get("username")
+            )
+
+        # If not in authorizer context, resolve authenticated user from connection table
+        if not authenticated_user_id:
+            if not connection_id:
+                _log("WARNING", "relay_missing_connection_id", route_key=route_key)
+                return {
+                    "statusCode": 403,
+                    "body": json.dumps({
+                        "error": "forbidden",
+                        "message": "Missing connection ID and absent authorizer claims",
+                        "timestamp": time.time(),
+                    }),
+                }
+
+            if table is None:
+                _log("ERROR", "relay_connection_storage_unavailable", connection_id=connection_id)
+                return {
+                    "statusCode": 403,
+                    "body": json.dumps({
+                        "error": "forbidden",
+                        "message": "Connection storage unavailable to verify connection identity",
+                        "timestamp": time.time(),
+                    }),
+                }
+
+            try:
+                conn_res = table.get_item(Key={"connectionId": connection_id})
+                conn_item = conn_res.get("Item")
+                if conn_item and conn_item.get("userId"):
+                    authenticated_user_id = conn_item.get("userId")
+                else:
+                    _log("WARNING", "relay_unauthenticated_connection", connection_id=connection_id)
+                    return {
+                        "statusCode": 403,
+                        "body": json.dumps({
+                            "error": "forbidden",
+                            "message": "Connection record missing or not authenticated",
+                            "timestamp": time.time(),
+                        }),
+                    }
+            except Exception as exc:
+                _log("ERROR", "relay_connection_lookup_failed", connection_id=connection_id, error=str(exc))
+                return {
+                    "statusCode": 403,
+                    "body": json.dumps({
+                        "error": "forbidden",
+                        "message": f"Connection lookup error: {str(exc)}",
+                        "timestamp": time.time(),
+                    }),
+                }
+
+        res = handle_relay(
+            raw_body,
+            bus_client=bus,
+            bus_name=EVENT_BUS_NAME,
+            authenticated_user_id=authenticated_user_id,
+            connection_id=connection_id,
+        )
         return {
             "statusCode": res["statusCode"],
             "body": json.dumps(res["body"]),

@@ -450,31 +450,46 @@ def extract_and_validate_auth(
                 error_message=err.message,
             )
 
-    # 3. Controlled Test Bypass (only allowed in tests when explicitly enabled and not in live AWS)
     strict_auth = os.getenv("AURA_STRICT_AUTH", "").strip().lower() in ("true", "1", "yes")
-    is_live_aws = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("AWS_DEFAULT_REGION"))
+    is_live_aws = bool(
+        os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+        or os.getenv("LAMBDA_TASK_ROOT")
+        or os.getenv("AWS_EXECUTION_ENV")
+        or os.getenv("AWS_LAMBDA_RUNTIME_API")
+    )
 
     if allow_test_bypass and not strict_auth and not is_live_aws:
         query_params = event.get("queryStringParameters") or {}
         test_user = query_params.get("user_id") or ""
-        if not test_user:
+        test_tenant = query_params.get("tenant_id") or ""
+        if not test_user or not test_tenant:
             raw_body = event.get("body")
             if isinstance(raw_body, str):
                 try:
-                    test_user = json.loads(raw_body).get("user_id", "")
+                    parsed_body = json.loads(raw_body)
+                    if isinstance(parsed_body, dict):
+                        if not test_user:
+                            test_user = parsed_body.get("user_id", "")
+                        if not test_tenant:
+                            test_tenant = parsed_body.get("tenant_id", "")
                 except Exception:
                     pass
             elif isinstance(raw_body, dict):
-                test_user = raw_body.get("user_id", "")
+                if not test_user:
+                    test_user = raw_body.get("user_id", "")
+                if not test_tenant:
+                    test_tenant = raw_body.get("tenant_id", "")
 
         if not test_user:
             test_user = "usr_marcus_test"
+        if not test_tenant:
+            test_tenant = "tenant_default"
 
         if test_user:
             return AuthContext(
                 user_id=str(test_user),
-                tenant_id="tenant_default",
-                claims={"sub": str(test_user)},
+                tenant_id=str(test_tenant),
+                claims={"sub": str(test_user), "tenant_id": str(test_tenant)},
                 is_authenticated=True,
                 auth_method="test_harness",
             )
@@ -526,6 +541,43 @@ def enforce_user_authorization(
             )
 
     return auth.user_id
+
+
+def enforce_tenant_authorization(
+    auth: AuthContext,
+    target_tenant_id: str | None = None,
+) -> str:
+    """Enforce that the caller is authenticated and authorized for the target tenant.
+
+    Returns the verified tenant_id to be used by all downstream operations.
+    Raises AuthError with:
+    - HTTP 401 if not authenticated.
+    - HTTP 403 if authenticated caller attempts cross-tenant access.
+    """
+    if not auth.is_authenticated or not auth.user_id:
+        raise AuthError(
+            401,
+            auth.error or "unauthorized",
+            auth.error_message or "Missing or invalid authentication credentials",
+        )
+
+    effective_tenant = auth.tenant_id or "tenant_default"
+    if target_tenant_id and target_tenant_id.strip():
+        req_tenant = target_tenant_id.strip()
+        if req_tenant != effective_tenant:
+            _log(
+                "WARNING",
+                "cross_tenant_access_blocked",
+                caller_tenant_id=effective_tenant,
+                target_tenant_id=req_tenant,
+            )
+            raise AuthError(
+                403,
+                "forbidden",
+                f"Access denied: authenticated caller in tenant '{effective_tenant}' cannot access resources belonging to tenant '{req_tenant}'",
+            )
+
+    return effective_tenant
 
 
 # ---------------------------------------------------------------------------

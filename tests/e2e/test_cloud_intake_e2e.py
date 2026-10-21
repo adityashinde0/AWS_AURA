@@ -51,8 +51,13 @@ def test_phase2_full_cloud_intake_pipeline() -> None:
     mock_bus = MagicMock()
 
     def cloud_intake_transport(envelope: dict) -> dict:
-        # Calls the actual Cloud Intake handler
-        res = handle_relay(envelope, bus_client=mock_bus, bus_name="aura-event-bus")
+        # Calls the actual Cloud Intake handler with authenticated connection identity
+        res = handle_relay(
+            envelope,
+            bus_client=mock_bus,
+            bus_name="aura-event-bus",
+            authenticated_user_id=envelope.get("user_id", "usr_aditi_01"),
+        )
         assert res["statusCode"] == 200
         return res["body"]
 

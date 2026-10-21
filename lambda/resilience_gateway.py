@@ -257,7 +257,7 @@ class MultiProviderModelGateway:
         Permanent configuration and authentication errors fail immediately without retrying.
         """
         last_exc: Exception | None = None
-        attempts = provider.max_retries + 1
+        attempts = max(1, provider.max_retries + 1)
         for attempt in range(attempts):
             try:
                 # Genuinely enforce wall-clock timeout without blocking on thread cleanup
@@ -284,6 +284,9 @@ class MultiProviderModelGateway:
             except (ProviderError, NotImplementedError) as exc:
                 # Permanent, auth, or unconfigured errors fail immediately without retrying
                 raise exc
+            except (ValueError, TypeError, KeyError) as exc:
+                # Format or schema parsing errors are deterministic and should fail fast
+                raise ProviderError(f"Provider invocation format error: {exc}") from exc
             except Exception as exc:
                 last_exc = ProviderServerError(f"Unexpected provider error: {exc}")
                 if attempt < attempts - 1:

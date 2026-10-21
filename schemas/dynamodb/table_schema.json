@@ -77,6 +77,42 @@
         "expires_at": "number",
         "ttl": "number"
       }
+    },
+    "UndoRecord": {
+      "PK": "UNDO#{undo_token}",
+      "SK": "RECORD",
+      "attributes": {
+        "token": "string",
+        "undo_token": "string",
+        "userId": "string (non-blank; mandatory; set at issuance; never updated)",
+        "tenantId": "string (non-blank; mandatory; set at issuance; never updated)",
+        "action_id": "string",
+        "action_type": "string",
+        "target_device": "string | null",
+        "status": "PENDING|IN_PROGRESS|SUCCEEDED|FAILED",
+        "leaseOwnerId": "string (UUID set when IN_PROGRESS; empty string otherwise)",
+        "leaseExpiresAt": "number (epoch seconds; 0 when no active lease)",
+        "completedAt": "number | null (epoch seconds; set upon SUCCEEDED)",
+        "failedReason": "string | null (reason string set upon FAILED)",
+        "created_at": "number (epoch seconds)",
+        "expires_at": "number (epoch seconds; used for TTL-based rejection)",
+        "retry_count": "number (atomically incremented on each FAILED transition)",
+        "required_reversals": "list[string] (immutable list of required reversal steps e.g. ['device', 'slack'])",
+        "completed_reversals": "list[string] (durably tracked list of completed reversal steps e.g. ['device', 'slack'])",
+        "uncertain_reversals": "list[string] (durably tracked list of steps with ambiguous/timed-out remote outcomes requiring authoritative reconciliation)",
+        "ttl": "number (DynamoDB TTL, 30 days default)"
+      },
+      "notes": [
+        "PK is unique per undo_token; one RECORD per token.",
+        "userId and tenantId must be stored non-blank at issuance; missing values are a data-integrity error and fail closed with 403.",
+        "tenant_default is a legitimate tenant value but must be written explicitly; a missing tenantId is never substituted with tenant_default at authorization time.",
+        "Status transitions: PENDING -> IN_PROGRESS -> SUCCEEDED (terminal) or FAILED (retriable). Atomic CAS on put_item prevents concurrent lease acquisition.",
+        "completedAt is set atomically upon terminal SUCCEEDED transition with condition #status = :in_progress AND leaseOwnerId = :owner.",
+        "failedReason is set and retry_count is atomically incremented (ADD retry_count :one) upon FAILED transition.",
+        "required_reversals locks required operations at issuance/lease-acquisition to prevent reversal scope from mutating between retries.",
+        "completed_reversals is updated atomically under leaseOwnerId fencing per completed step before proceeding to subsequent steps.",
+        "uncertain_reversals durably tracks timed-out or unconfirmed steps to block unauthoritative replays until authoritatively reconciled."
+      ]
     }
   }
 }

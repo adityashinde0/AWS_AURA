@@ -48,20 +48,28 @@ class MockDynamoDBTable:
         existing = self.items.get((pk, sk))
 
         if ConditionExpression:
-            # Evaluate condition expression for atomic undo lease
-            if "attribute_not_exists(PK)" in ConditionExpression:
-                if existing is not None:
-                    status = existing.get("status")
-                    lease_expires = existing.get("leaseExpiresAt", 0)
-                    now = (ExpressionAttributeValues or {}).get(":now", time.time())
-                    failed_val = (ExpressionAttributeValues or {}).get(":failed", "FAILED")
-                    in_prog_val = (ExpressionAttributeValues or {}).get(":in_progress", "IN_PROGRESS")
+            if existing is not None:
+                if ConditionExpression == "attribute_not_exists(PK)":
+                    raise Exception("ConditionalCheckFailedException: Condition check failed")
+                vals = ExpressionAttributeValues or {}
+                stored_u = existing.get("userId") or existing.get("user_id")
+                if ":uid" in vals and stored_u != vals[":uid"]:
+                    raise Exception("ConditionalCheckFailedException: Condition check failed")
+                stored_t = existing.get("tenantId") or existing.get("tenant_id")
+                if ":tid" in vals and stored_t != vals[":tid"]:
+                    raise Exception("ConditionalCheckFailedException: Condition check failed")
+                status = existing.get("status")
+                lease_expires = existing.get("leaseExpiresAt", existing.get("lease_expires_at", 0))
+                now = vals.get(":now", time.time())
+                pending_val = vals.get(":pending", "PENDING")
+                failed_val = vals.get(":failed", "FAILED")
+                in_prog_val = vals.get(":in_progress", "IN_PROGRESS")
 
-                    # Check if failed or expired
-                    is_failed = status == failed_val
-                    is_expired = status == in_prog_val and lease_expires < now
-                    if not (is_failed or is_expired):
-                        raise Exception("ConditionalCheckFailedException: Condition check failed")
+                is_pending = status == pending_val
+                is_failed = status == failed_val
+                is_expired = status == in_prog_val and lease_expires < now
+                if not (is_pending or is_failed or is_expired):
+                    raise Exception("ConditionalCheckFailedException: Condition check failed")
 
         self.items[(pk, sk)] = dict(Item)
         return {}
@@ -73,6 +81,7 @@ class MockDynamoDBTable:
         ConditionExpression: str | None = None,
         ExpressionAttributeNames: dict[str, str] | None = None,
         ExpressionAttributeValues: dict[str, Any] | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
         pk, sk = Key.get("PK", ""), Key.get("SK", "")
         existing = self.items.get((pk, sk))
@@ -82,18 +91,35 @@ class MockDynamoDBTable:
         if ConditionExpression:
             if "#status = :in_progress AND leaseOwnerId = :owner" in ConditionExpression:
                 req_owner = (ExpressionAttributeValues or {}).get(":owner")
-                if existing.get("status") != "IN_PROGRESS" or existing.get("leaseOwnerId") != req_owner:
+                owner_id = existing.get("leaseOwnerId") or existing.get("lease_owner_id")
+                if existing.get("status") != "IN_PROGRESS" or owner_id != req_owner:
                     raise Exception("ConditionalCheckFailedException: Fencing token mismatch")
 
         # Apply update expression
         now = time.time()
-        if ":succeeded" in (ExpressionAttributeValues or {}):
+        vals = ExpressionAttributeValues or {}
+        if ":step_list" in vals:
+            current_revs = list(existing.get("completed_reversals") or [])
+            for s in vals[":step_list"]:
+                if s not in current_revs:
+                    current_revs.append(s)
+            existing["completed_reversals"] = current_revs
+        elif ":succeeded" in vals:
             existing["status"] = "SUCCEEDED"
             existing["completedAt"] = int(now)
-        elif ":failed" in (ExpressionAttributeValues or {}):
+            existing["completed_at"] = int(now)
+            if ":completed_revs" in vals:
+                existing["completed_reversals"] = list(vals[":completed_revs"])
+        elif ":failed" in vals:
             existing["status"] = "FAILED"
-            existing["failedReason"] = (ExpressionAttributeValues or {}).get(":reason", "failed")
-        elif ":false" in (ExpressionAttributeValues or {}):
+            existing["failedReason"] = vals.get(":reason", "failed")
+            existing["failed_reason"] = vals.get(":reason", "failed")
+            existing["leaseExpiresAt"] = int(now)
+            existing["lease_expires_at"] = int(now)
+            existing["retry_count"] = existing.get("retry_count", 0) + vals.get(":one", 1)
+            if ":completed_revs" in vals:
+                existing["completed_reversals"] = list(vals[":completed_revs"])
+        elif ":false" in vals:
             existing["active"] = False
             existing["revoked_at"] = int(now)
 

@@ -39,21 +39,27 @@ class MockDynamoTable:
             raise RuntimeError("Simulated DynamoDB connection drop / throughput exceeded")
         key = (Item["PK"], Item["SK"])
         if ConditionExpression:
-            # Check attribute_not_exists(PK)
-            if "attribute_not_exists(PK)" in ConditionExpression:
-                existing = self.items.get(key)
-                if existing is not None:
-                    # check if status permits retry or lease expired
-                    status = existing.get("status")
-                    lease_exp = existing.get("leaseExpiresAt", 0)
-                    now = kwargs.get("ExpressionAttributeValues", {}).get(":now", time.time())
-                    allowed = False
-                    if "(#status = :failed)" in ConditionExpression and status == "FAILED":
-                        allowed = True
-                    elif "(#status = :in_progress AND leaseExpiresAt < :now)" in ConditionExpression and status == "IN_PROGRESS" and lease_exp < now:
-                        allowed = True
-                    if not allowed:
-                        raise RuntimeError("ConditionalCheckFailedException: Item already exists and is locked")
+            existing = self.items.get(key)
+            if existing is not None:
+                if ConditionExpression == "attribute_not_exists(PK)":
+                    raise RuntimeError("ConditionalCheckFailedException: Item already exists")
+                vals = kwargs.get("ExpressionAttributeValues", {})
+                if ":uid" in vals and existing.get("userId") != vals[":uid"]:
+                    raise RuntimeError("ConditionalCheckFailedException: User mismatch")
+                if ":tid" in vals and existing.get("tenantId") != vals[":tid"]:
+                    raise RuntimeError("ConditionalCheckFailedException: Tenant mismatch")
+                status = existing.get("status")
+                lease_exp = existing.get("leaseExpiresAt", 0)
+                now = vals.get(":now", time.time())
+                allowed = False
+                if ":pending" in vals and status == vals[":pending"]:
+                    allowed = True
+                elif ":failed" in vals and status == vals[":failed"]:
+                    allowed = True
+                elif ":in_progress" in vals and status == vals[":in_progress"] and lease_exp < now:
+                    allowed = True
+                if not allowed:
+                    raise RuntimeError("ConditionalCheckFailedException: Item already exists and is locked")
         self.items[key] = dict(Item)
         return {"ResponseMetadata": {"HTTPStatusCode": 200}}
 

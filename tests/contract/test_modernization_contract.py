@@ -21,6 +21,7 @@ import pytest
 
 fg = importlib.import_module("lambda.focus_guardian")
 ws = importlib.import_module("lambda.websocket_handler")
+auth_mod = importlib.import_module("lambda.auth")
 
 lambda_handler_fg = fg.lambda_handler
 lambda_handler_ws = ws.lambda_handler
@@ -236,7 +237,7 @@ class TestWebsocketHandlerCorrelationContract:
         logs = capture_logs(monkeypatch, ws)
 
         mock_bus = MagicMock()
-        resp = handle_relay(valid_relay_body, bus_client=mock_bus)
+        resp = handle_relay(valid_relay_body, bus_client=mock_bus, authenticated_user_id="usr_contract_01")
 
         assert resp["statusCode"] == 200
 
@@ -257,7 +258,7 @@ class TestWebsocketHandlerCorrelationContract:
         logs = capture_logs(monkeypatch, ws)
 
         mock_bus = MagicMock()
-        handle_relay(valid_relay_body, bus_client=mock_bus)
+        handle_relay(valid_relay_body, bus_client=mock_bus, authenticated_user_id="usr_contract_01")
 
         accepted_logs = [l for l in logs if l.get("event") == "relay_accepted"]
         assert accepted_logs
@@ -279,10 +280,11 @@ class TestWebsocketHandlerCorrelationContract:
         logs = capture_logs(monkeypatch, ws)
 
         mock_table = MagicMock()
+        token = auth_mod.create_test_jwt("usr_contract_01")
         event = {
             "requestContext": {"connectionId": "conn_qs_test"},
             "queryStringParameters": {
-                "auth_token": "valid_token_32_characters_long_ok",
+                "auth_token": token,
                 "user_id": "usr_contract_01",
             },
             # Deliberately NO Authorization header
@@ -309,9 +311,10 @@ class TestWebsocketHandlerCorrelationContract:
         logs = capture_logs(monkeypatch, ws)
 
         mock_table = MagicMock()
+        token = auth_mod.create_test_jwt("usr_header_test")
         event = {
             "requestContext": {"connectionId": "conn_header_test"},
-            "headers": {"Authorization": "Bearer 1234567890abcdef12345678"},
+            "headers": {"Authorization": f"Bearer {token}"},
             "queryStringParameters": {},
         }
         resp = handle_connect(event, table=mock_table)
@@ -333,7 +336,7 @@ class TestWebsocketHandlerCorrelationContract:
         mock_bus = MagicMock()
         # Missing event_type and user_id
         bad_body = {"action": "relay", "event_id": "evt_bad_contract"}
-        resp = handle_relay(bad_body, bus_client=mock_bus)
+        resp = handle_relay(bad_body, bus_client=mock_bus, authenticated_user_id="usr_contract_01")
 
         assert resp["statusCode"] == 400
 

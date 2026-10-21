@@ -88,6 +88,7 @@ def test_undo_action_and_audit(store: InMemoryDataStore) -> None:
         {
             "action_id": "act_101",
             "user_id": "usr_aditi_01",
+            "tenant_id": "tenant_default",
             "action_type": "request_pause",
             "target_device": "firetv_01",
             "status": "executed",
@@ -97,7 +98,7 @@ def test_undo_action_and_audit(store: InMemoryDataStore) -> None:
         }
     )
 
-    undo_body = {"user_id": "usr_aditi_01", "undo_token": "token_reversal_123"}
+    undo_body = {"user_id": "usr_aditi_01", "tenant_id": "tenant_default", "undo_token": "token_reversal_123"}
     undo_resp = handle_undo_action(undo_body, store=store)
     assert undo_resp["statusCode"] == 200
     undo_data = json.loads(undo_resp["body"])

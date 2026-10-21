@@ -125,7 +125,20 @@ class WatsonxAdapter:
 
         Fails closed to ``safe_fallback`` on any error.
         """
-        # 1. Prompt injection scan across all evidence snippets
+        # 1. Prompt injection scan across user intent and all evidence snippets
+        if request.user_intent and self._has_prompt_injection(request.user_intent):
+            _log(
+                "WARNING",
+                "watsonx_adapter_prompt_injection_blocked",
+                user_id=request.user_id,
+                session_id=request.session_id,
+                source="user_intent",
+            )
+            sanitized_request = request.model_copy(update={"user_intent": None})
+            fallback = safe_fallback(sanitized_request, fallback_reason="validation_error")
+            fallback.reason = "Potential prompt injection detected in user intent; fallback enforced."
+            return fallback
+
         for ev in request.evidence:
             snippet = ev.get("snippet") or ev.get("text") or ""
             if self._has_prompt_injection(snippet):
@@ -134,6 +147,7 @@ class WatsonxAdapter:
                     "watsonx_adapter_prompt_injection_blocked",
                     user_id=request.user_id,
                     session_id=request.session_id,
+                    source="evidence",
                 )
                 fallback = safe_fallback(request, fallback_reason="validation_error")
                 fallback.reason = "Potential prompt injection detected in evidence; fallback enforced."

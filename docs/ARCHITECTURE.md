@@ -86,7 +86,69 @@ Production adaptations:
 
 [brookejamieson/reinvent-notetaker](https://github.com/brookejamieson/reinvent-notetaker) demonstrates the complementary pattern of Bee capture plus a Strands agent and AWS knowledge tooling to turn material into researched notes. AURA borrows the separation of capture and reasoning, but uses short pre-meeting context, structured output, and a policy gate rather than post-event note generation.
 
-The requested `armcbride12/beemcp` URL was unavailable at research time. Do not treat it as an implementation dependency. For a maintained open MCP reference, [OkGoDoIt/beemcp](https://github.com/OkGoDoIt/beemcp) documents a Bee-to-MCP bridge; prefer Bee’s official CLI/MCP for production integration where capability coverage permits.
+## The Model-to-Policy Boundary: Deterministic Gatekeeping
+
+A core architectural invariant of Project AURA is the strict separation between probabilistic generative models and deterministic system actuation.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        MODEL PROPOSAL vs. POLICY EXECUTION                             │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                        │
+│   Probabilistic Intelligence Tier (AWS Bedrock / IBM Watsonx)                          │
+│   • Input: Minimized, PII-scrubbed context envelope (max 5 evidence items).            │
+│   • Output: Strictly validated JSON schema (FocusProposal).                            │
+│   • Non-Negotiable Invariant: Returns policy_required: true.                           │
+│   • Authority: ZERO execution capability. Models cannot invoke device APIs.            │
+│                                      │                                                 │
+│                                      ▼                                                 │
+│   Anti-Hallucination Evidence Guard (lambda/focus_guardian.py)                         │
+│   • Verifies: proposed_evidence_ids ⊆ input_evidence_ids.                              │
+│   • Violation: Immediate discard -> safe_fallback(reason="hallucinated_evidence").     │
+│                                      │                                                 │
+│                                      ▼                                                 │
+│   Deterministic Policy Gatekeeper (standalone_agent/policy_engine.py)                  │
+│   • Grant Verification: Explicit user consent (Ask every time, This session, Always).  │
+│   • Device Allowlist: Explicit hardware ID matching in user's household partition.     │
+│   • Undo Rate Guardrail: Circuit breaker trips if 30-day undo rate exceeds 5%.         │
+│   • Actuation: Issues single-use Undo Token and dispatches to capability adapter.      │
+│                                                                                        │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Adapter Readiness & Integration Boundaries
+
+To maintain technical transparency across portfolio evaluation:
+
+| Adapter / Target | Readiness Tier | Verified In-Repo Evidence | Requirements for Live Physical Execution |
+|---|---|---|---|
+| **Focus Guardian Engine** | **Implemented** | `lambda/focus_guardian.py`, `tests/unit/test_focus_guardian.py` | None (fully autonomous serverless handler). |
+| **Cognito RS256 Auth Gate** | **Implemented** | `lambda/auth.py`, `tests/unit/test_auth_enforcement.py` | Amazon Cognito User Pool ARN. |
+| **Durable DynamoDB Undo Machine** | **Implemented** | `lambda/control_plane.py`, `tests/unit/test_durable_undo_statemachine.py` | DynamoDB Table (`AuraCoreTable`). |
+| **Resilience Gateway (Dual-LLM)** | **Implemented** | `lambda/resilience_gateway.py`, `tests/unit/test_resilience_gateway.py` | AWS Bedrock and/or IBM Watsonx API keys. |
+| **Client-Side Redactor** | **Implemented** | `standalone_agent/redactor.py`, `tests/unit/test_redactor.py` | None (local regex execution). |
+| **Amazon Fire TV Adapter** | **Simulated / Adapter Staged** | `lambda/control_plane.py`, `tests/unit/test_device_adapter.py` | Physical Fire TV on local subnet supporting `MediaSession` v2. |
+| **Amazon Echo / Alexa Adapter** | **Simulated / Adapter Staged** | `lambda/control_plane.py`, `tests/unit/test_device_adapter.py` | Alexa Smart Home Skill & certified household authorization. |
+| **Smart Lighting & AC Adapters** | **Simulated / Adapter Staged** | `lambda/control_plane.py`, `tests/unit/test_device_adapter.py` | Philips Hue Bridge or Home Assistant / Ecobee REST API. |
+| **Slack Status Adapter** | **Prototype (Contract Tested)** | `lambda/control_plane.py`, `tests/unit/test_slack_adapter.py` | Slack App with `chat:write` / `users.profile:write` OAuth tokens. |
+| **Apple Push Notification (APNs)** | **Prototype (Contract Tested)** | `lambda/apns_dispatcher.py`, `tests/contract/test_apns_dispatcher_contract.py` | Apple Developer Team Certificate (.p8) & APNs topic. |
+
+---
+
+## Edge Case & Failure Recovery Pathways
+
+AURA is engineered to fail closed and preserve user agency during disruptions:
+
+1. **Insufficient Evidence ($T-5$ Context Gap):**
+   - If fewer than 1 relevant memory is available, the system immediately returns `safe_fallback(fallback_reason="insufficient_context")` rather than generating speculative briefing questions.
+2. **Fabricated Citations (Model Hallucination):**
+   - If the model returns evidence IDs absent from the input request, the output is intercepted before reaching the user and replaced with a deterministic fallback (`hallucinated_evidence`).
+3. **Provider Outage / Throttling:**
+   - Bedrock timeouts (>8.0s) or HTTP 429/5xx trigger automatic circuit-breaker failover to Watsonx (12.0s deadline). If Watsonx also fails, the system executes a zero-compute local heuristic briefing.
+4. **Offline Device or Rollback Failure:**
+   - If an undo request cannot reach a physical device (e.g., Fire TV is offline), the handler returns `502 Bad Gateway` with `retryable: true`, leaving the single-use token unconsumed.
+
+---
 
 ## Data model and retention
 

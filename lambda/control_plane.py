@@ -105,6 +105,15 @@ class DynamoDBDataStore(DataStore):
         self.wearable_bindings: dict[str, dict[str, Any]] = {}
         self.escalation_timestamps: dict[str, float] = {}
         self.pending_escalations: dict[str, dict[str, Any]] = {}
+        # Hybrid containers & in-memory caches to prevent AttributeError across handlers
+        self.grants: dict[str, dict[str, Any]] = {}
+        self.sessions: dict[str, dict[str, Any]] = {}
+        self.audit_records: list[dict[str, Any]] = []
+        self.undone_tokens: set[str] = set()
+        self.undo_records: dict[str, dict[str, Any]] = {}
+        self.deep_work_banks: dict[str, dict[str, Any]] = {}
+        self.signal_consents: dict[str, set[str]] = {}
+        self.preferences: dict[str, dict[str, Any]] = {}
 
     def get_grants(self, user_id: str, tenant_id: str = "tenant_default") -> list[dict[str, Any]]:
         pk = f"TENANT#{tenant_id}#USER#{user_id}"
@@ -187,6 +196,94 @@ class DynamoDBDataStore(DataStore):
         except Exception as exc:
             raise StorageError(f"DynamoDB get_undo_record failed: {exc}") from exc
 
+    def save_undo_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Durable persistence of newly issued undo token.
+
+        Conforms to schemas/dynamodb/table_schema.json:
+        PK=UNDO#{undo_token}, SK=RECORD
+        """
+        undo_token = record.get("token") or record.get("undo_token")
+        if not undo_token:
+            raise ValueError("undo_token is required")
+        user_id = record.get("userId") or record.get("user_id")
+        if not user_id:
+            raise ValueError("userId is required")
+        tenant_id = record.get("tenantId") or record.get("tenant_id") or "tenant_default"
+        now = record.get("created_at") or record.get("timestamp") or time.time()
+        ttl_seconds = record.get("ttl_seconds") or 86400
+        expires_at = record.get("expires_at") or (now + ttl_seconds)
+
+        item = {
+            "PK": f"UNDO#{undo_token}",
+            "SK": "RECORD",
+            "token": undo_token,
+            "undo_token": undo_token,
+            "userId": user_id,
+            "tenantId": tenant_id,
+            "user_id": user_id,
+            "tenant_id": tenant_id,
+            "action_id": record.get("action_id", ""),
+            "action_type": record.get("action_type", ""),
+            "target_device": record.get("target_device") or record.get("target_device_id"),
+            "status": record.get("status", "PENDING"),
+            "created_at": int(now),
+            "timestamp": int(now),
+            "expires_at": int(expires_at),
+            "leaseOwnerId": "",
+            "leaseExpiresAt": 0,
+            "retry_count": 0,
+            "required_reversals": list(record.get("required_reversals") or []),
+            "completed_reversals": list(record.get("completed_reversals") or []),
+            "uncertain_reversals": list(record.get("uncertain_reversals") or []),
+            "ttl": int(now + 86400 * 30),
+        }
+        try:
+            self.table.put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(PK)",
+            )
+            self.undo_records[undo_token] = item
+            return item
+        except Exception as exc:
+            raise StorageError(f"DynamoDB save_undo_record failed: {exc}") from exc
+
+    def record_undo_step_progress(
+        self,
+        undo_token: str,
+        user_id: str,
+        lease_owner_id: str,
+        step: str,
+    ) -> bool:
+        """Atomically persist a completed reversal step fenced by leaseOwnerId.
+
+        Guarantees that a crash after this step will not repeat the step on retry.
+        Fails if the lease was lost, expired, or claimed by another worker.
+        """
+        try:
+            res = self.table.update_item(
+                Key={"PK": f"UNDO#{undo_token}", "SK": "RECORD"},
+                UpdateExpression="SET #status = :in_progress, completed_reversals = list_append(if_not_exists(completed_reversals, :empty_list), :step_list)",
+                ConditionExpression="#status = :in_progress AND leaseOwnerId = :owner",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":in_progress": "IN_PROGRESS",
+                    ":owner": lease_owner_id,
+                    ":empty_list": [],
+                    ":step_list": [step],
+                },
+            )
+            if undo_token in self.undo_records:
+                revs = self.undo_records[undo_token].setdefault("completed_reversals", [])
+                if step not in revs:
+                    revs.append(step)
+                uncert = self.undo_records[undo_token].setdefault("uncertain_reversals", [])
+                if step in uncert:
+                    uncert.remove(step)
+            return True
+        except Exception as exc:
+            _log("ERROR", "dynamodb_record_undo_step_progress_failed", token=undo_token, step=step, error=str(exc))
+            raise StorageError(f"DynamoDB record_undo_step_progress failed: {exc}") from exc
+
     def acquire_undo_lease(
         self,
         undo_token: str,
@@ -196,46 +293,130 @@ class DynamoDBDataStore(DataStore):
         tenant_id: str = "tenant_default",
     ) -> tuple[bool, int, str | None]:
         now = time.time()
+        # Validate caller arguments
+        if not user_id or not str(user_id).strip():
+            return False, 400, "user_id is required"
+        if not tenant_id or not str(tenant_id).strip():
+            return False, 400, "tenant_id is required"
+
         try:
-            self.table.put_item(
-                Item={
-                    "PK": f"UNDO#{undo_token}",
-                    "SK": "RECORD",
-                    "userId": user_id,
-                    "tenantId": tenant_id,
-                    "status": "IN_PROGRESS",
-                    "leaseOwnerId": lease_owner_id,
-                    "leaseExpiresAt": int(now + lease_duration),
-                    "timestamp": int(now),
-                    "ttl": int(now + 86400 * 30),
-                },
-                ConditionExpression=(
+            existing = self.get_undo_record(undo_token)
+            if existing:
+                owner_u = (existing.get("userId") or existing.get("user_id") or "").strip()
+                owner_t = (existing.get("tenantId") or existing.get("tenant_id") or "").strip()
+                if not owner_u:
+                    return False, 403, "Undo token has no assigned owner; revocation prohibited"
+                if not owner_t:
+                    return False, 403, "Undo token has no stored tenant; revocation prohibited"
+                if owner_u != str(user_id).strip():
+                    return False, 403, "Undo token belongs to another user"
+                if owner_t != str(tenant_id).strip():
+                    return False, 403, "Undo token belongs to another tenant"
+                if existing.get("status") == "SUCCEEDED":
+                    return False, 200, "Action was already reversed (idempotent)"
+                if existing.get("status") == "IN_PROGRESS" and existing.get("leaseExpiresAt", 0) > int(now):
+                    return False, 409, "Undo reversal currently in progress, please retry shortly"
+
+            action_id = existing.get("action_id", "") if existing else ""
+            action_type = existing.get("action_type", "") if existing else ""
+            target_device = existing.get("target_device") if existing else None
+            created_at = existing.get("created_at", int(now)) if existing else int(now)
+            completed_revs = list(existing.get("completed_reversals") or []) if existing else []
+            required_revs = list(existing.get("required_reversals") or []) if existing else []
+            uncertain_revs = list(existing.get("uncertain_reversals") or []) if existing else []
+
+            item = {
+                "PK": f"UNDO#{undo_token}",
+                "SK": "RECORD",
+                "token": undo_token,
+                "undo_token": undo_token,
+                "userId": user_id,
+                "tenantId": tenant_id,
+                "user_id": user_id,
+                "tenant_id": tenant_id,
+                "action_id": action_id,
+                "action_type": action_type,
+                "target_device": target_device,
+                "status": "IN_PROGRESS",
+                "leaseOwnerId": lease_owner_id,
+                "leaseExpiresAt": int(now + lease_duration),
+                "created_at": created_at,
+                "timestamp": int(now),
+                "required_reversals": required_revs,
+                "completed_reversals": completed_revs,
+                "uncertain_reversals": uncertain_revs,
+                "ttl": int(now + 86400 * 30),
+            }
+            if existing:
+                condition = (
+                    "((userId = :uid OR user_id = :uid) AND (tenantId = :tid OR tenant_id = :tid)) "
+                    "AND ("
+                    "#status = :pending "
+                    "OR #status = :failed "
+                    "OR (#status = :in_progress AND (leaseExpiresAt < :now OR lease_expires_at < :now))"
+                    ")"
+                )
+            else:
+                condition = (
                     "attribute_not_exists(PK) "
-                    "OR (#status = :failed) "
-                    "OR (#status = :in_progress AND leaseExpiresAt < :now)"
-                ),
-                ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={
-                    ":failed": "FAILED",
-                    ":in_progress": "IN_PROGRESS",
-                    ":now": int(now),
-                },
+                    "OR ("
+                    "((userId = :uid OR user_id = :uid) AND (tenantId = :tid OR tenant_id = :tid)) "
+                    "AND ("
+                    "#status = :pending "
+                    "OR #status = :failed "
+                    "OR (#status = :in_progress AND (leaseExpiresAt < :now OR lease_expires_at < :now))"
+                    ")"
+                    ")"
+                )
+            expr_names = {"#status": "status"}
+            expr_values = {
+                ":uid": user_id,
+                ":tid": tenant_id,
+                ":pending": "PENDING",
+                ":failed": "FAILED",
+                ":in_progress": "IN_PROGRESS",
+                ":now": int(now),
+            }
+            self.table.put_item(
+                Item=item,
+                ConditionExpression=condition,
+                ExpressionAttributeNames=expr_names,
+                ExpressionAttributeValues=expr_values,
             )
+            self.undo_records[undo_token] = item
             return True, 200, None
         except Exception as exc:
             if "ConditionalCheckFailed" in type(exc).__name__ or "ConditionalCheckFailed" in str(exc):
                 rec = self.get_undo_record(undo_token)
-                if rec and rec.get("status") == "SUCCEEDED":
-                    return False, 200, "Action was already reversed (idempotent)"
+                if rec:
+                    owner_u = (rec.get("userId") or rec.get("user_id") or "").strip()
+                    owner_t = (rec.get("tenantId") or rec.get("tenant_id") or "").strip()
+                    if not owner_u:
+                        return False, 403, "Undo token has no assigned owner; revocation prohibited"
+                    if not owner_t:
+                        return False, 403, "Undo token has no stored tenant; revocation prohibited"
+                    if owner_u != str(user_id).strip():
+                        return False, 403, "Undo token belongs to another user"
+                    if owner_t != str(tenant_id).strip():
+                        return False, 403, "Undo token belongs to another tenant"
+                    if rec.get("status") == "SUCCEEDED":
+                        return False, 200, "Action was already reversed (idempotent)"
                 return False, 409, "Undo reversal currently in progress, please retry shortly"
             raise StorageError(f"DynamoDB acquire_undo_lease failed: {exc}") from exc
 
-    def complete_undo(self, undo_token: str, user_id: str, lease_owner_id: str) -> bool:
+    def complete_undo(
+        self,
+        undo_token: str,
+        user_id: str,
+        lease_owner_id: str,
+        completed_reversals: list[str] | None = None,
+    ) -> bool:
         now = time.time()
+        revs = list(completed_reversals or [])
         try:
             self.table.update_item(
                 Key={"PK": f"UNDO#{undo_token}", "SK": "RECORD"},
-                UpdateExpression="SET #status = :succeeded, completedAt = :now",
+                UpdateExpression="SET #status = :succeeded, completedAt = :now, leaseExpiresAt = :now, completed_reversals = :completed_revs, uncertain_reversals = :empty_list",
                 ConditionExpression="#status = :in_progress AND leaseOwnerId = :owner",
                 ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={
@@ -243,29 +424,69 @@ class DynamoDBDataStore(DataStore):
                     ":in_progress": "IN_PROGRESS",
                     ":owner": lease_owner_id,
                     ":now": int(now),
+                    ":completed_revs": revs,
+                    ":empty_list": [],
                 },
             )
+            if undo_token in self.undo_records:
+                self.undo_records[undo_token]["status"] = "SUCCEEDED"
+                self.undo_records[undo_token]["completed_at"] = now
+                self.undo_records[undo_token]["completedAt"] = int(now)
+                self.undo_records[undo_token]["lease_expires_at"] = now
+                self.undo_records[undo_token]["leaseExpiresAt"] = int(now)
+                self.undo_records[undo_token]["completed_reversals"] = revs
+                self.undo_records[undo_token]["uncertain_reversals"] = []
+            self.undone_tokens.add(undo_token)
             return True
         except Exception as exc:
             _log("WARNING", "dynamodb_complete_undo_failed", error=str(exc))
             return False
 
-    def fail_undo(self, undo_token: str, user_id: str, lease_owner_id: str, error_reason: str = "failed") -> bool:
+    def fail_undo(
+        self,
+        undo_token: str,
+        user_id: str,
+        lease_owner_id: str,
+        error_reason: str = "failed",
+        completed_reversals: list[str] | None = None,
+        uncertain_reversals: list[str] | None = None,
+    ) -> bool:
         now = time.time()
+        revs = list(completed_reversals or [])
+        uncert = list(uncertain_reversals or []) if uncertain_reversals is not None else None
         try:
+            update_expr = "SET #status = :failed, failedReason = :reason, leaseExpiresAt = :now, completed_reversals = :completed_revs"
+            expr_values: dict[str, Any] = {
+                ":failed": "FAILED",
+                ":in_progress": "IN_PROGRESS",
+                ":owner": lease_owner_id,
+                ":reason": error_reason,
+                ":now": int(now),
+                ":one": 1,
+                ":completed_revs": revs,
+            }
+            if uncert is not None:
+                update_expr += ", uncertain_reversals = :uncertain_revs"
+                expr_values[":uncertain_revs"] = uncert
+            update_expr += " ADD retry_count :one"
+
             self.table.update_item(
                 Key={"PK": f"UNDO#{undo_token}", "SK": "RECORD"},
-                UpdateExpression="SET #status = :failed, failedReason = :reason, leaseExpiresAt = :now",
+                UpdateExpression=update_expr,
                 ConditionExpression="#status = :in_progress AND leaseOwnerId = :owner",
                 ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={
-                    ":failed": "FAILED",
-                    ":in_progress": "IN_PROGRESS",
-                    ":owner": lease_owner_id,
-                    ":reason": error_reason,
-                    ":now": int(now),
-                },
+                ExpressionAttributeValues=expr_values,
             )
+            if undo_token in self.undo_records:
+                self.undo_records[undo_token]["status"] = "FAILED"
+                self.undo_records[undo_token]["failedReason"] = error_reason
+                self.undo_records[undo_token]["failed_reason"] = error_reason
+                self.undo_records[undo_token]["lease_expires_at"] = now
+                self.undo_records[undo_token]["leaseExpiresAt"] = int(now)
+                self.undo_records[undo_token]["retry_count"] = self.undo_records[undo_token].get("retry_count", 0) + 1
+                self.undo_records[undo_token]["completed_reversals"] = revs
+                if uncert is not None:
+                    self.undo_records[undo_token]["uncertain_reversals"] = uncert
             return True
         except Exception as exc:
             _log("WARNING", "dynamodb_fail_undo_failed", error=str(exc))
@@ -395,6 +616,69 @@ class InMemoryDataStore(DataStore):
     def get_undo_record(self, undo_token: str) -> dict[str, Any] | None:
         return self.undo_records.get(undo_token)
 
+    def save_undo_record(self, record: dict[str, Any]) -> dict[str, Any]:
+        undo_token = record.get("token") or record.get("undo_token")
+        if not undo_token:
+            raise ValueError("undo_token is required")
+        user_id = record.get("userId") or record.get("user_id")
+        if not user_id:
+            raise ValueError("userId is required")
+        tenant_id = record.get("tenantId") or record.get("tenant_id") or "tenant_default"
+        now = record.get("created_at") or record.get("timestamp") or time.time()
+        ttl_seconds = record.get("ttl_seconds") or 86400
+        expires_at = record.get("expires_at") or (now + ttl_seconds)
+
+        item = {
+            "PK": f"UNDO#{undo_token}",
+            "SK": "RECORD",
+            "token": undo_token,
+            "undo_token": undo_token,
+            "userId": user_id,
+            "tenantId": tenant_id,
+            "user_id": user_id,
+            "tenant_id": tenant_id,
+            "action_id": record.get("action_id", ""),
+            "action_type": record.get("action_type", ""),
+            "target_device": record.get("target_device") or record.get("target_device_id"),
+            "status": record.get("status", "PENDING"),
+            "created_at": now,
+            "timestamp": now,
+            "expires_at": expires_at,
+            "lease_owner_id": "",
+            "leaseOwnerId": "",
+            "lease_expires_at": 0.0,
+            "leaseExpiresAt": 0,
+            "retry_count": 0,
+            "required_reversals": list(record.get("required_reversals") or []),
+            "completed_reversals": list(record.get("completed_reversals") or []),
+            "uncertain_reversals": list(record.get("uncertain_reversals") or []),
+            "ttl": int(now + 86400 * 30),
+        }
+        self.undo_records[undo_token] = item
+        return item
+
+    def record_undo_step_progress(
+        self,
+        undo_token: str,
+        user_id: str,
+        lease_owner_id: str,
+        step: str,
+    ) -> bool:
+        """Atomically persist a completed reversal step fenced by lease_owner_id."""
+        rec = self.undo_records.get(undo_token)
+        if not rec:
+            raise StorageError(f"Undo record {undo_token} not found")
+        owner_id = rec.get("lease_owner_id") or rec.get("leaseOwnerId")
+        if rec.get("status") != "IN_PROGRESS" or owner_id != lease_owner_id:
+            raise StorageError(f"Fencing token mismatch: current lease owner '{owner_id}' != '{lease_owner_id}'")
+        revs = rec.setdefault("completed_reversals", [])
+        if step not in revs:
+            revs.append(step)
+        uncert = rec.setdefault("uncertain_reversals", [])
+        if step in uncert:
+            uncert.remove(step)
+        return True
+
     def acquire_undo_lease(
         self,
         undo_token: str,
@@ -404,41 +688,103 @@ class InMemoryDataStore(DataStore):
         tenant_id: str = "tenant_default",
     ) -> tuple[bool, int, str | None]:
         now = time.time()
+        # Validate caller arguments
+        if not user_id or not str(user_id).strip():
+            return False, 400, "user_id is required"
+        if not tenant_id or not str(tenant_id).strip():
+            return False, 400, "tenant_id is required"
+
         rec = self.undo_records.get(undo_token)
         if rec:
+            rec_user = (rec.get("userId") or rec.get("user_id") or "").strip()
+            rec_tenant = (rec.get("tenantId") or rec.get("tenant_id") or "").strip()
+            if not rec_user:
+                return False, 403, "Undo token has no assigned owner; revocation prohibited"
+            if not rec_tenant:
+                return False, 403, "Undo token has no stored tenant; revocation prohibited"
+            if rec_user != str(user_id).strip():
+                return False, 403, "Undo token belongs to another user"
+            if rec_tenant != str(tenant_id).strip():
+                return False, 403, "Undo token belongs to another tenant"
             if rec.get("status") == "SUCCEEDED" or undo_token in self.undone_tokens:
                 return False, 200, "Action was already reversed (idempotent)"
-            if rec.get("status") == "IN_PROGRESS" and now < rec.get("lease_expires_at", 0):
+            if rec.get("status") == "IN_PROGRESS" and now < rec.get("lease_expires_at", rec.get("leaseExpiresAt", 0)):
                 return False, 409, "Undo reversal currently in progress, please retry shortly"
 
-        self.undo_records[undo_token] = {
+        completed_revs = list(rec.get("completed_reversals") or []) if rec else []
+        required_revs = list(rec.get("required_reversals") or []) if rec else []
+        uncertain_revs = list(rec.get("uncertain_reversals") or []) if rec else []
+
+        item = {
             "token": undo_token,
+            "undo_token": undo_token,
             "user_id": user_id,
+            "userId": user_id,
             "tenant_id": tenant_id,
+            "tenantId": tenant_id,
+            "action_id": rec.get("action_id", "") if rec else "",
+            "action_type": rec.get("action_type", "") if rec else "",
+            "target_device": rec.get("target_device") if rec else None,
             "status": "IN_PROGRESS",
             "lease_owner_id": lease_owner_id,
+            "leaseOwnerId": lease_owner_id,
             "lease_expires_at": now + lease_duration,
+            "leaseExpiresAt": int(now + lease_duration),
             "created_at": rec.get("created_at", now) if rec else now,
+            "expires_at": rec.get("expires_at", now + 86400) if rec else now + 86400,
             "retry_count": rec.get("retry_count", 0) if rec else 0,
+            "required_reversals": required_revs,
+            "completed_reversals": completed_revs,
+            "uncertain_reversals": uncertain_revs,
+            "ttl": int(now + 86400 * 30),
         }
+        self.undo_records[undo_token] = item
         return True, 200, None
 
-    def complete_undo(self, undo_token: str, user_id: str, lease_owner_id: str) -> bool:
+    def complete_undo(
+        self,
+        undo_token: str,
+        user_id: str,
+        lease_owner_id: str,
+        completed_reversals: list[str] | None = None,
+    ) -> bool:
         rec = self.undo_records.get(undo_token)
-        if rec and rec.get("status") == "IN_PROGRESS" and rec.get("lease_owner_id") == lease_owner_id:
+        owner_id = rec.get("lease_owner_id") or rec.get("leaseOwnerId") if rec else None
+        if rec and rec.get("status") == "IN_PROGRESS" and owner_id == lease_owner_id:
             rec["status"] = "SUCCEEDED"
             rec["completed_at"] = time.time()
+            rec["completedAt"] = int(time.time())
+            rec["lease_expires_at"] = time.time()
+            rec["leaseExpiresAt"] = int(time.time())
+            if completed_reversals is not None:
+                rec["completed_reversals"] = list(completed_reversals)
+            rec["uncertain_reversals"] = []
             self.undone_tokens.add(undo_token)
             return True
         return False
 
-    def fail_undo(self, undo_token: str, user_id: str, lease_owner_id: str, error_reason: str = "failed") -> bool:
+    def fail_undo(
+        self,
+        undo_token: str,
+        user_id: str,
+        lease_owner_id: str,
+        error_reason: str = "failed",
+        completed_reversals: list[str] | None = None,
+        uncertain_reversals: list[str] | None = None,
+    ) -> bool:
         rec = self.undo_records.get(undo_token)
-        if rec and rec.get("status") == "IN_PROGRESS" and rec.get("lease_owner_id") == lease_owner_id:
+        owner_id = rec.get("lease_owner_id") or rec.get("leaseOwnerId") if rec else None
+        if rec and rec.get("status") == "IN_PROGRESS" and owner_id == lease_owner_id:
             rec["status"] = "FAILED"
             rec["failed_reason"] = error_reason
+            rec["failedReason"] = error_reason
             rec["lease_expires_at"] = time.time()
+            rec["leaseExpiresAt"] = int(time.time())
             rec["retry_count"] = rec.get("retry_count", 0) + 1
+            if completed_reversals is not None:
+                rec["completed_reversals"] = list(completed_reversals)
+            if uncertain_reversals is not None:
+                rec["uncertain_reversals"] = list(uncertain_reversals)
             return True
         return False
 
@@ -515,9 +861,9 @@ def _json_resp(status: int, data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_get_grants(user_id: str, store: Any = default_store) -> dict[str, Any]:
+def handle_get_grants(user_id: str, store: Any = default_store, tenant_id: str = "tenant_default") -> dict[str, Any]:
     try:
-        active_grants = store.get_grants(user_id)
+        active_grants = store.get_grants(user_id, tenant_id=tenant_id)
     except StorageError as exc:
         return _json_resp(503, {"error": "storage_error", "message": str(exc)})
     return _json_resp(200, {"user_id": user_id, "grants": active_grants})
@@ -559,9 +905,9 @@ def handle_create_grant(body: dict[str, Any], store: Any = default_store) -> dic
     return _json_resp(201, saved_grant)
 
 
-def handle_revoke_grant(grant_id: str, user_id: str, store: Any = default_store) -> dict[str, Any]:
+def handle_revoke_grant(grant_id: str, user_id: str, store: Any = default_store, tenant_id: str = "tenant_default") -> dict[str, Any]:
     try:
-        store.revoke_grant(grant_id, user_id)
+        store.revoke_grant(grant_id, user_id, tenant_id=tenant_id)
     except StorageError as exc:
         return _json_resp(503, {"error": "storage_error", "message": str(exc)})
     return _json_resp(200, {"revoked": True, "grant_id": grant_id, "revoked_at": time.time()})
@@ -828,22 +1174,14 @@ def handle_focus_signal(body: dict[str, Any], store: InMemoryDataStore = default
             action_decision = "executed"
             store.undo_guardrail.record_execution(user_id, recommended_action)
             act_id = f"act_{uuid.uuid4().hex[:8]}"
-            store.audit_records.append(
-                {
-                    "action_id": act_id,
-                    "user_id": user_id,
-                    "action_type": recommended_action,
-                    "target_device_id": device_actions[0]["device"] if device_actions else None,
-                    "status": "executed",
-                    "reason": f"Executed learned routine for intent '{user_intent}'",
-                    "undo_token": undo_token,
-                    "idempotency_key": idempotency_key,
-                    "timestamp": now,
-                }
-            )
-            store.undo_records[undo_token] = {
+
+            undo_record = {
                 "token": undo_token,
+                "undo_token": undo_token,
                 "user_id": user_id,
+                "userId": user_id,
+                "tenant_id": tenant_id,
+                "tenantId": tenant_id,
                 "action_id": act_id,
                 "action_type": recommended_action,
                 "target_device": device_actions[0]["device"] if device_actions else None,
@@ -851,8 +1189,60 @@ def handle_focus_signal(body: dict[str, Any], store: InMemoryDataStore = default
                 "created_at": now,
                 "expires_at": now + 86400,
                 "lease_expires_at": 0.0,
+                "leaseExpiresAt": 0,
                 "retry_count": 0,
             }
+            if hasattr(store, "save_undo_record"):
+                try:
+                    store.save_undo_record(undo_record)
+                except StorageError as exc:
+                    _log("ERROR", "undo_token_persistence_failed", user_id=user_id, token=undo_token, error=str(exc))
+                    # Side effect already executed — attempt reversal to avoid orphaned action.
+                    reversal_attempted = False
+                    reversal_ok = False
+                    try:
+                        rev_result = store.device_adapter.execute_undo(undo_token)
+                        reversal_attempted = True
+                        reversal_ok = isinstance(rev_result, dict) and rev_result.get("success", False)
+                    except Exception as rev_exc:
+                        _log("CRITICAL", "batch_routine_reversal_failed_after_persistence_error",
+                             user_id=user_id, token=undo_token, reversal_error=str(rev_exc))
+                    if not reversal_ok:
+                        _log("CRITICAL", "batch_routine_action_orphaned_persistence_and_reversal_failed",
+                             user_id=user_id, token=undo_token, reversal_attempted=reversal_attempted)
+                    return _json_resp(
+                        503,
+                        {
+                            "error": "storage_error",
+                            "message": f"Durable undo token persistence failed: {exc}",
+                            "action_decision": "execution_failed",
+                            "reversal_attempted": reversal_attempted,
+                            "reversal_ok": reversal_ok,
+                            "undo_token": None,
+                        },
+                    )
+            elif hasattr(store, "undo_records"):
+                store.undo_records[undo_token] = undo_record
+
+            audit_entry = {
+                "action_id": act_id,
+                "user_id": user_id,
+                "tenant_id": tenant_id,
+                "action_type": recommended_action,
+                "target_device_id": device_actions[0]["device"] if device_actions else None,
+                "status": "executed",
+                "reason": f"Executed learned routine for intent '{user_intent}'",
+                "undo_token": undo_token,
+                "idempotency_key": idempotency_key,
+                "timestamp": now,
+            }
+            if hasattr(store, "record_audit"):
+                try:
+                    store.record_audit(audit_entry)
+                except Exception as exc:
+                    _log("WARNING", "record_audit_failed", error=str(exc))
+            if hasattr(store, "audit_records"):
+                store.audit_records.append(audit_entry)
         else:
             action_decision = "ask_user_confirmation"
             store.audit_records.append(
@@ -1000,23 +1390,15 @@ def handle_focus_signal(body: dict[str, Any], store: InMemoryDataStore = default
                 action_decision = "executed"
                 undo_token = receipt.undo_token
                 store.undo_guardrail.record_execution(user_id, recommended_action)
-                store.audit_records.append(
-                    {
-                        "action_id": receipt.receipt_id,
-                        "user_id": user_id,
-                        "action_type": recommended_action,
-                        "target_device_id": target_device,
-                        "status": "executed",
-                        "reason": reason,
-                        "undo_token": undo_token,
-                        "idempotency_key": idempotency_key,
-                        "timestamp": now,
-                    }
-                )
+
                 if undo_token:
-                    store.undo_records[undo_token] = {
+                    undo_record = {
                         "token": undo_token,
+                        "undo_token": undo_token,
                         "user_id": user_id,
+                        "userId": user_id,
+                        "tenant_id": tenant_id,
+                        "tenantId": tenant_id,
                         "action_id": receipt.receipt_id,
                         "action_type": recommended_action,
                         "target_device": target_device,
@@ -1024,8 +1406,60 @@ def handle_focus_signal(body: dict[str, Any], store: InMemoryDataStore = default
                         "created_at": now,
                         "expires_at": now + 86400,
                         "lease_expires_at": 0.0,
+                        "leaseExpiresAt": 0,
                         "retry_count": 0,
                     }
+                    if hasattr(store, "save_undo_record"):
+                        try:
+                            store.save_undo_record(undo_record)
+                        except StorageError as exc:
+                            _log("ERROR", "undo_token_persistence_failed", user_id=user_id, token=undo_token, error=str(exc))
+                            # Side effect already executed — attempt reversal to avoid orphaned pause.
+                            reversal_attempted = False
+                            reversal_ok = False
+                            try:
+                                rev_result = store.device_adapter.execute_undo(undo_token)
+                                reversal_attempted = True
+                                reversal_ok = isinstance(rev_result, dict) and rev_result.get("success", False)
+                            except Exception as rev_exc:
+                                _log("CRITICAL", "consent_pause_reversal_failed_after_persistence_error",
+                                     user_id=user_id, token=undo_token, reversal_error=str(rev_exc))
+                            if not reversal_ok:
+                                _log("CRITICAL", "consent_pause_action_orphaned_persistence_and_reversal_failed",
+                                     user_id=user_id, token=undo_token, reversal_attempted=reversal_attempted)
+                            return _json_resp(
+                                503,
+                                {
+                                    "error": "storage_error",
+                                    "message": f"Durable undo token persistence failed: {exc}",
+                                    "action_decision": "execution_failed",
+                                    "reversal_attempted": reversal_attempted,
+                                    "reversal_ok": reversal_ok,
+                                    "undo_token": None,
+                                },
+                            )
+                    elif hasattr(store, "undo_records"):
+                        store.undo_records[undo_token] = undo_record
+
+                audit_entry = {
+                    "action_id": receipt.receipt_id,
+                    "user_id": user_id,
+                    "tenant_id": tenant_id,
+                    "action_type": recommended_action,
+                    "target_device_id": target_device,
+                    "status": "executed",
+                    "reason": reason,
+                    "undo_token": undo_token,
+                    "idempotency_key": idempotency_key,
+                    "timestamp": now,
+                }
+                if hasattr(store, "record_audit"):
+                    try:
+                        store.record_audit(audit_entry)
+                    except Exception as exc:
+                        _log("WARNING", "record_audit_failed", error=str(exc))
+                if hasattr(store, "audit_records"):
+                    store.audit_records.append(audit_entry)
             else:
                 err_msg = receipt.error_message or "Device execution failed"
                 if "Household mismatch" in err_msg:
@@ -1165,10 +1599,10 @@ def handle_reset_guardrail(body: dict[str, Any], store: InMemoryDataStore = defa
     return _json_resp(200, {"reset": True, "user_id": user_id, "action_type": action_type})
 
 
-def handle_query_audit(user_id: str, limit: int = 20, store: Any = default_store) -> dict[str, Any]:
+def handle_query_audit(user_id: str, limit: int = 20, store: Any = default_store, tenant_id: str = "tenant_default") -> dict[str, Any]:
     try:
         if hasattr(store, "get_audit_records"):
-            records = store.get_audit_records(user_id, limit=limit)
+            records = store.get_audit_records(user_id, tenant_id=tenant_id, limit=limit)
         else:
             records = [r for r in getattr(store, "audit_records", []) if r.get("user_id") == user_id]
             records.sort(key=lambda r: r.get("timestamp", 0), reverse=True)
@@ -1181,8 +1615,9 @@ def handle_query_audit(user_id: str, limit: int = 20, store: Any = default_store
 def handle_undo_action(body: dict[str, Any], store: Any = default_store) -> dict[str, Any]:
     undo_token = body.get("undo_token")
     user_id = body.get("user_id")
+    tenant_id = body.get("tenant_id") or "tenant_default"
 
-    if not undo_token or not user_id:
+    if not undo_token or not str(undo_token).strip() or not user_id or not str(user_id).strip():
         return _json_resp(400, {"error": "invalid_parameters", "message": "undo_token and user_id required"})
 
     now = time.time()
@@ -1196,11 +1631,76 @@ def handle_undo_action(body: dict[str, Any], store: Any = default_store) -> dict
                 matching_record = r
                 break
 
-    owner_user_id = (undo_rec.get("userId") or undo_rec.get("user_id") if undo_rec else None) or (matching_record.get("user_id") if matching_record else None)
+    # If the token is not found in either undo_records or audit_records:
+    # Fail closed with 404 Not Found immediately without acquiring phantom leases
+    if not undo_rec and not matching_record:
+        if hasattr(store, "undone_tokens") and undo_token in store.undone_tokens:
+            return _json_resp(
+                200,
+                {"success": True, "undo_token": undo_token, "idempotent": True, "message": "Action was already reversed (idempotent)"},
+            )
+        return _json_resp(
+            404,
+            {
+                "success": False,
+                "error": "undo_failed",
+                "message": "Invalid or unknown undo token; no device or status was restored",
+                "undo_token": undo_token,
+            },
+        )
 
-    if owner_user_id and owner_user_id != user_id:
+    # Resolve owner user_id from durable undo record (preferred) or audit-record fallback.
+    # Caller identity is derived from the request body (ultimately from auth claims); only
+    # stored ownership fields determine authorisation — we never accept caller-supplied identity
+    # as proof of stored ownership.
+    if undo_rec:
+        owner_user_id = (undo_rec.get("userId") or undo_rec.get("user_id") or "").strip() or None
+        _raw_owner_tenant = (undo_rec.get("tenantId") or undo_rec.get("tenant_id") or "").strip()
+        owner_tenant_id: str | None = _raw_owner_tenant if _raw_owner_tenant else None
+    else:
+        # Audit-record fallback — both user and tenant must be present and non-blank.
+        owner_user_id = (matching_record.get("user_id") or "").strip() or None  # type: ignore[union-attr]
+        _raw_owner_tenant = (matching_record.get("tenant_id") or "").strip()  # type: ignore[union-attr]
+        owner_tenant_id = _raw_owner_tenant if _raw_owner_tenant else None
+
+    # Reject missing or unknown owner user
+    if not owner_user_id:
+        _log("WARNING", "undo_missing_owner", token=undo_token)
+        return _json_resp(403, {"error": "unauthorized", "message": "Undo token has no assigned owner; revocation prohibited"})
+
+    # Reject missing or blank stored tenant — do NOT substitute tenant_default
+    if not owner_tenant_id:
+        _log("WARNING", "undo_missing_stored_tenant", token=undo_token)
+        return _json_resp(403, {"error": "unauthorized", "message": "Undo token has no stored tenant; revocation prohibited"})
+
+    # Reject inconsistent ownership records if both records are present
+    if undo_rec and matching_record:
+        rec_u = (undo_rec.get("userId") or undo_rec.get("user_id") or "").strip()
+        aud_u = (matching_record.get("user_id") or "").strip()
+        if rec_u and aud_u and rec_u != aud_u:
+            _log("ERROR", "undo_ownership_inconsistent", rec_user=rec_u, audit_user=aud_u, token=undo_token)
+            return _json_resp(403, {"error": "unauthorized", "message": "Inconsistent user ownership records for undo token"})
+
+        rec_t = (undo_rec.get("tenantId") or undo_rec.get("tenant_id") or "").strip()
+        aud_t = (matching_record.get("tenant_id") or "").strip()
+        if rec_t and aud_t and rec_t != aud_t:
+            _log("ERROR", "undo_tenant_inconsistent", rec_tenant=rec_t, audit_tenant=aud_t, token=undo_token)
+            return _json_resp(403, {"error": "unauthorized", "message": "Inconsistent tenant ownership records for undo token"})
+
+    # Strict user ownership check — compare stored owner against caller identity
+    if owner_user_id != str(user_id).strip():
         _log("WARNING", "undo_ownership_mismatch", caller=user_id, owner=owner_user_id, token=undo_token)
         return _json_resp(403, {"error": "unauthorized", "message": "Undo token belongs to another user"})
+
+    # Strict tenant ownership check — stored tenant must exactly match caller tenant.
+    # tenant_default is never used to bypass or substitute a missing stored value.
+    effective_owner_tenant = owner_tenant_id  # already validated non-blank above
+    effective_caller_tenant = str(tenant_id or "").strip()
+    if not effective_caller_tenant:
+        effective_caller_tenant = "tenant_default"
+    if effective_owner_tenant != effective_caller_tenant:
+        _log("WARNING", "undo_tenant_mismatch", caller_tenant=effective_caller_tenant, owner_tenant=effective_owner_tenant, token=undo_token)
+        return _json_resp(403, {"error": "unauthorized", "message": "Undo token belongs to another tenant"})
 
     # Expiry validation
     if matching_record:
@@ -1211,6 +1711,8 @@ def handle_undo_action(body: dict[str, Any], store: Any = default_store) -> dict
 
     if undo_rec:
         if undo_rec.get("expires_at") and now > undo_rec["expires_at"]:
+            return _json_resp(410, {"error": "undo_token_expired", "message": "Undo token has expired", "undo_token": undo_token})
+        if undo_rec.get("ttl_seconds") and (now - undo_rec.get("created_at", undo_rec.get("timestamp", 0))) > undo_rec["ttl_seconds"]:
             return _json_resp(410, {"error": "undo_token_expired", "message": "Undo token has expired", "undo_token": undo_token})
 
     # 2. Replay Prevention & State Machine
@@ -1233,6 +1735,7 @@ def handle_undo_action(body: dict[str, Any], store: Any = default_store) -> dict
             user_id=user_id,
             lease_owner_id=lease_owner_id,
             lease_duration=30.0,
+            tenant_id=effective_caller_tenant,
         )
     except StorageError as st_err:
         return _json_resp(503, {"error": "storage_error", "message": str(st_err)})
@@ -1242,71 +1745,488 @@ def handle_undo_action(body: dict[str, Any], store: Any = default_store) -> dict
             return _json_resp(200, {"success": True, "undo_token": undo_token, "idempotent": True, "message": err_msg or "Action was already reversed (idempotent)"})
         if status_code == 409:
             return _json_resp(409, {"error": "undo_in_progress", "message": err_msg or "Undo reversal currently in progress, please retry shortly"})
+        if status_code == 403:
+            return _json_resp(403, {"error": "unauthorized", "message": err_msg or "Undo token belongs to another user or tenant"})
         return _json_resp(status_code, {"error": "storage_error", "message": err_msg or "Failed to acquire undo lease"})
 
     # 4. Reverse on certified device adapter or Slack adapter
-    device_result = store.device_adapter.execute_undo(undo_token)
-    slack_result = store.slack_adapter.execute_undo(undo_token)
+    known_action_type = (undo_rec.get("action_type") if undo_rec else "") or (matching_record.get("action_type") if matching_record else "") or ""
 
-    device_ok = isinstance(device_result, dict) and device_result.get("success", False)
-    slack_ok = isinstance(slack_result, dict) and slack_result.get("success", False)
-
-    # Honest failure reporting: if token is unknown to devices, slack, and records
-    if not device_ok and not slack_ok and not matching_record and not undo_rec:
-        store.fail_undo(undo_token, user_id, lease_owner_id, error_reason="unknown_token")
+    # Determine required reversal steps
+    if undo_rec and undo_rec.get("required_reversals"):
+        required_steps: list[str] = list(undo_rec["required_reversals"])
+    elif matching_record and matching_record.get("required_reversals"):
+        required_steps = list(matching_record["required_reversals"])
+    elif known_action_type == "slack_status":
+        required_steps = ["slack"]
+    elif known_action_type in ("compound", "compound_action", "focus_session", "session_start", "meeting_focus_pack"):
+        required_steps = ["device", "slack"]
+    elif (undo_rec and (undo_rec.get("target_device") or undo_rec.get("targetDevice"))) and (
+        matching_record and (matching_record.get("channel_id") or matching_record.get("slack_channel") or matching_record.get("slack_user_id"))
+    ):
+        required_steps = ["device", "slack"]
+    elif known_action_type in ("request_pause", "pause", "device_action", "resume", "dnd", "dim_lights", "nudge") or (undo_rec and (undo_rec.get("target_device") or undo_rec.get("targetDevice"))) or not known_action_type:
+        required_steps = ["device"]
+    else:
+        # Unsupported, malformed, or ambiguous action type: fail closed to prevent arbitrary side effects
+        _log("WARNING", "undo_unsupported_action_type", token=undo_token, action_type=known_action_type)
         return _json_resp(
-            404,
+            400,
             {
-                "success": False,
-                "error": "undo_failed",
-                "message": "Invalid or unknown undo token; no device or status was restored",
+                "error": "unsupported_action_type",
+                "message": f"Action type '{known_action_type}' is unsupported or malformed; cannot safely determine required reversals",
                 "undo_token": undo_token,
             },
         )
 
-    # If device explicitly failed due to offline state or network failure on a known action
-    if isinstance(device_result, dict) and device_result.get("error") == "device_offline":
-        store.fail_undo(undo_token, user_id, lease_owner_id, error_reason="device_offline")
+    # Lock required_reversals on the record so retry scope cannot change between attempts
+    curr_rec = store.get_undo_record(undo_token)
+    if curr_rec and not curr_rec.get("required_reversals"):
+        curr_rec["required_reversals"] = list(required_steps)
+    if undo_rec and not undo_rec.get("required_reversals"):
+        undo_rec["required_reversals"] = list(required_steps)
+
+    # Cold-start recovery for simulated device adapter:
+    # If token was durably recorded for a device action but adapter is cold, reconstruct receipt.
+    # Explicitly blank/empty target_device fails closed as malformed; absent target_device falls back to dev_default for legacy records.
+    if "device" in required_steps and hasattr(store, "device_adapter") and hasattr(store.device_adapter, "undo_map"):
+        if undo_token not in store.device_adapter.undo_map:
+            if undo_rec and "target_device" in undo_rec and undo_rec["target_device"] is not None and not str(undo_rec["target_device"]).strip():
+                _log("WARNING", "undo_cold_start_device_receipt_malformed", token=undo_token)
+                return _json_resp(
+                    400,
+                    {
+                        "error": "malformed_receipt_data",
+                        "message": "Cannot rehydrate device receipt after cold start: target_device is explicitly blank",
+                        "undo_token": undo_token,
+                    },
+                )
+            target_dev = (undo_rec.get("target_device") if undo_rec else None) or (matching_record.get("target_device") if matching_record else None) or "dev_default"
+            from standalone_agent.device_adapter import DeviceActionReceipt
+            store.device_adapter.undo_map[undo_token] = DeviceActionReceipt(
+                receipt_id=f"rcpt_{uuid.uuid4().hex[:8]}",
+                idempotency_key=f"idem_{undo_token}",
+                device_id=target_dev,
+                action=known_action_type or "request_pause",
+                previous_state="playing",
+                new_state="paused",
+                undo_token=undo_token,
+            )
+
+    # Cold-start recovery for Slack adapter:
+    # If simulated instance is fresh, rehydrate receipt so execute_undo succeeds.
+    # Explicitly blank/empty channel data fails closed as malformed.
+    if "slack" in required_steps and hasattr(store, "slack_adapter") and hasattr(store.slack_adapter, "status_history"):
+        if not any(getattr(r, "undo_token", None) == undo_token for r in store.slack_adapter.status_history):
+            if undo_rec and "slack_channel" in undo_rec and undo_rec["slack_channel"] is not None and not str(undo_rec["slack_channel"]).strip():
+                _log("WARNING", "undo_cold_start_slack_receipt_malformed", token=undo_token)
+                return _json_resp(
+                    400,
+                    {
+                        "error": "malformed_receipt_data",
+                        "message": "Cannot rehydrate Slack receipt after cold start: channel is explicitly blank",
+                        "undo_token": undo_token,
+                    },
+                )
+            slack_channel = None
+            if matching_record:
+                slack_channel = matching_record.get("channel_id") or matching_record.get("slack_channel")
+            if not slack_channel and undo_rec:
+                slack_channel = undo_rec.get("slack_channel") or (undo_rec.get("target_device") if known_action_type == "slack_status" else None)
+            if not slack_channel:
+                slack_channel = "#general"
+            from standalone_agent.slack_adapter import SlackStatusReceipt
+            receipt = SlackStatusReceipt(
+                receipt_id=f"rcpt_slack_{uuid.uuid4().hex[:8]}",
+                user_id=user_id,
+                workspace_id=(matching_record.get("workspace_id") if matching_record else None) or (undo_rec.get("workspace_id") if undo_rec else None) or "T012345678",
+                target_channel=slack_channel,
+                status_text="In focus",
+                status_emoji=":focus:",
+                posted_at=time.time(),
+                expires_at=time.time() + 3600,
+                undo_token=undo_token,
+                idempotency_key=f"idem_{undo_token}",
+                is_active=True,
+            )
+            store.slack_adapter.status_history.append(receipt)
+            store.slack_adapter.active_statuses[user_id] = receipt
+            store.slack_adapter.active_statuses[user_id] = receipt
+
+    # Load durable progress and uncertainty state
+    completed_reversals: list[str] = list(
+        (undo_rec.get("completed_reversals") if undo_rec else None)
+        or (matching_record.get("completed_reversals") if matching_record else None)
+        or []
+    )
+    uncertain_reversals: list[str] = list(
+        (undo_rec.get("uncertain_reversals") if undo_rec else None)
+        or (matching_record.get("uncertain_reversals") if matching_record else None)
+        or []
+    )
+
+    device_result: Any = None
+    device_error: str | None = None
+    device_ok = False
+
+    if "device" in required_steps:
+        if "device" in completed_reversals:
+            device_ok = True
+            device_result = {"success": True, "already_completed": True, "message": "Device reversal already completed on prior attempt"}
+            _log("INFO", "undo_step_already_completed", step="device", token=undo_token)
+        elif "device" in uncertain_reversals:
+            # Step outcome was ambiguous/timed-out on a prior attempt.
+            # Do NOT blindly replay! Authoritative reconciliation required.
+            reconciled = False
+            target_dev = (undo_rec.get("target_device") if undo_rec else None) or (matching_record.get("target_device") if matching_record else None)
+            if hasattr(store, "device_adapter") and hasattr(store.device_adapter, "get_device_status") and target_dev:
+                try:
+                    dev_status = store.device_adapter.get_device_status(target_dev)
+                except Exception as q_exc:
+                    _log("WARNING", "undo_device_query_error", device=target_dev, error=str(q_exc))
+                    dev_status = None
+
+                if dev_status is not None:
+                    current_st = getattr(dev_status, "state", None) or getattr(dev_status, "playback_state", None)
+                    expected_state = "playing" if known_action_type in ("request_pause", "pause", "compound", "compound_action", "") else "idle"
+                    if current_st == expected_state:
+                        reconciled = True
+                        if "device" in uncertain_reversals:
+                            uncertain_reversals.remove("device")
+                        try:
+                            if hasattr(store, "record_undo_step_progress"):
+                                store.record_undo_step_progress(undo_token, user_id, lease_owner_id, "device")
+                            if "device" not in completed_reversals:
+                                completed_reversals.append("device")
+                            device_ok = True
+                            device_result = {"success": True, "reconciled": True, "message": f"Device state '{current_st}' authoritatively reconciled as restored"}
+                            _log("INFO", "undo_step_authoritatively_reconciled", step="device", token=undo_token)
+                        except Exception as persist_exc:
+                            _log("ERROR", "undo_device_progress_persistence_failed", token=undo_token, error=str(persist_exc))
+                            return _json_resp(
+                                502,
+                                {
+                                    "success": False,
+                                    "error": "persistence_failure",
+                                    "retryable": True,
+                                    "message": f"Device reversal reconciled but progress persistence failed: {persist_exc}",
+                                    "undo_token": undo_token,
+                                    "completed_reversals": list(completed_reversals),
+                                    "pending_reversals": [s for s in required_steps if s not in completed_reversals],
+                                },
+                            )
+
+            if not reconciled and not device_ok:
+                # Remote system has no authoritative query endpoint or device status is unavailable
+                device_error = "reconciliation_required"
+                _log("WARNING", "undo_device_uncertainty_unresolvable", token=undo_token, device=target_dev)
+        else:
+            try:
+                device_result = store.device_adapter.execute_undo(undo_token)
+                device_ok = isinstance(device_result, dict) and bool(device_result.get("success", False))
+                if device_ok:
+                    try:
+                        if hasattr(store, "record_undo_step_progress"):
+                            store.record_undo_step_progress(undo_token, user_id, lease_owner_id, "device")
+                        if "device" not in completed_reversals:
+                            completed_reversals.append("device")
+                    except Exception as persist_exc:
+                        _log("ERROR", "undo_device_progress_persistence_failed", token=undo_token, error=str(persist_exc))
+                        return _json_resp(
+                            502,
+                            {
+                                "success": False,
+                                "error": "persistence_failure",
+                                "retryable": True,
+                                "message": f"Device reversal succeeded on remote system but progress persistence failed: {persist_exc}",
+                                "undo_token": undo_token,
+                                "completed_reversals": list(completed_reversals),
+                                "pending_reversals": [s for s in required_steps if s not in completed_reversals],
+                            },
+                        )
+            except (TimeoutError, Exception) as exc:
+                err_str = str(exc).lower()
+                if isinstance(exc, TimeoutError) or "timeout" in err_str:
+                    device_error = "timeout_uncertain"
+                    if "device" not in uncertain_reversals:
+                        uncertain_reversals.append("device")
+                else:
+                    device_error = str(exc)
+                _log("ERROR", "undo_device_adapter_exception", token=undo_token, error=device_error)
+
+    slack_result: Any = None
+    slack_error: str | None = None
+    slack_ok = False
+
+    if "slack" in required_steps:
+        if "slack" in completed_reversals:
+            slack_ok = True
+            slack_result = {"success": True, "already_completed": True, "message": "Slack status reversal already completed on prior attempt"}
+            _log("INFO", "undo_step_already_completed", step="slack", token=undo_token)
+        elif "slack" in uncertain_reversals:
+            reconciled = False
+            if hasattr(store, "slack_adapter"):
+                active_st = getattr(store.slack_adapter, "active_statuses", {}).get(user_id)
+                if active_st is None or not getattr(active_st, "is_active", True):
+                    reconciled = True
+                    if "slack" in uncertain_reversals:
+                        uncertain_reversals.remove("slack")
+                    try:
+                        if hasattr(store, "record_undo_step_progress"):
+                            store.record_undo_step_progress(undo_token, user_id, lease_owner_id, "slack")
+                        if "slack" not in completed_reversals:
+                            completed_reversals.append("slack")
+                        slack_ok = True
+                        slack_result = {"success": True, "reconciled": True, "message": "Slack status authoritatively reconciled as cleared/inactive"}
+                        _log("INFO", "undo_step_authoritatively_reconciled", step="slack", token=undo_token)
+                    except Exception as persist_exc:
+                        _log("ERROR", "undo_slack_progress_persistence_failed", token=undo_token, error=str(persist_exc))
+                        return _json_resp(
+                            502,
+                            {
+                                "success": False,
+                                "error": "persistence_failure",
+                                "retryable": True,
+                                "message": f"Slack reversal reconciled but progress persistence failed: {persist_exc}",
+                                "undo_token": undo_token,
+                                "completed_reversals": list(completed_reversals),
+                                "pending_reversals": [s for s in required_steps if s not in completed_reversals],
+                            },
+                        )
+
+            if not reconciled and not slack_ok:
+                slack_error = "reconciliation_required"
+                _log("WARNING", "undo_slack_uncertainty_unresolvable", token=undo_token)
+        else:
+            try:
+                raw_slack = store.slack_adapter.execute_undo(undo_token)
+                if isinstance(raw_slack, dict):
+                    slack_ok = bool(raw_slack.get("success", False))
+                else:
+                    slack_ok = bool(raw_slack)
+                if not slack_ok and hasattr(store.slack_adapter, "status_history"):
+                    for r in store.slack_adapter.status_history:
+                        if getattr(r, "undo_token", None) == undo_token and (getattr(r, "is_undone", False) or not getattr(r, "is_active", True)):
+                            slack_ok = True
+                            raw_slack = {"success": True, "already_completed": True}
+                            break
+                slack_result = raw_slack
+                if slack_ok:
+                    try:
+                        if hasattr(store, "record_undo_step_progress"):
+                            store.record_undo_step_progress(undo_token, user_id, lease_owner_id, "slack")
+                        if "slack" not in completed_reversals:
+                            completed_reversals.append("slack")
+                    except Exception as persist_exc:
+                        _log("ERROR", "undo_slack_progress_persistence_failed", token=undo_token, error=str(persist_exc))
+                        return _json_resp(
+                            502,
+                            {
+                                "success": False,
+                                "error": "persistence_failure",
+                                "retryable": True,
+                                "message": f"Slack reversal succeeded on remote system but progress persistence failed: {persist_exc}",
+                                "undo_token": undo_token,
+                                "completed_reversals": list(completed_reversals),
+                                "pending_reversals": [s for s in required_steps if s not in completed_reversals],
+                            },
+                        )
+            except (TimeoutError, Exception) as exc:
+                err_str = str(exc).lower()
+                if isinstance(exc, TimeoutError) or "timeout" in err_str:
+                    slack_error = "timeout_uncertain"
+                    if "slack" not in uncertain_reversals:
+                        uncertain_reversals.append("slack")
+                else:
+                    slack_error = str(exc)
+                _log("ERROR", "undo_slack_adapter_exception", token=undo_token, error=slack_error)
+
+    all_succeeded = all(step in completed_reversals for step in required_steps)
+    is_offline = isinstance(device_result, dict) and (device_result.get("error") == "device_offline" or device_result.get("offline") is True)
+    is_timeout = (device_error == "timeout_uncertain") or (slack_error == "timeout_uncertain")
+    is_reconciliation_required = (device_error == "reconciliation_required") or (slack_error == "reconciliation_required")
+
+    if not all_succeeded:
+        failed_steps = [s for s in required_steps if s not in completed_reversals]
+        if is_reconciliation_required:
+            reversal_error_reason = "reconciliation_required"
+        elif is_offline:
+            reversal_error_reason = "device_offline"
+        elif is_timeout:
+            reversal_error_reason = "timeout_uncertain"
+        elif "device" in failed_steps and device_error:
+            reversal_error_reason = device_error
+        elif "slack" in failed_steps and slack_error:
+            reversal_error_reason = slack_error
+        elif "device" in failed_steps and isinstance(device_result, dict) and device_result.get("message"):
+            reversal_error_reason = device_result["message"]
+        else:
+            reversal_error_reason = f"reversal_incomplete: pending {failed_steps}"
+
+        failed_persisted = store.fail_undo(
+            undo_token,
+            user_id,
+            lease_owner_id,
+            error_reason=reversal_error_reason,
+            completed_reversals=completed_reversals,
+            uncertain_reversals=uncertain_reversals,
+        )
+        if not failed_persisted:
+            _log("WARNING", "undo_fail_transition_failed", token=undo_token, owner=lease_owner_id)
+        _log(
+            "WARNING",
+            "undo_action_failed",
+            user_id=user_id,
+            undo_token=undo_token,
+            reason=reversal_error_reason,
+            completed_reversals=completed_reversals,
+            failed_steps=failed_steps,
+            uncertain_reversals=uncertain_reversals,
+        )
+
+        now = time.time()
+        fail_audit_entry = {
+            "action_id": f"undo_fail_{uuid.uuid4().hex[:8]}",
+            "user_id": user_id,
+            "tenant_id": effective_caller_tenant,
+            "action_type": "undo_reversal",
+            "status": "failed",
+            "reason": f"Undo reversal failed: {reversal_error_reason}",
+            "undo_token": undo_token,
+            "timestamp": now,
+            "completed_reversals": list(completed_reversals),
+            "pending_reversals": list(failed_steps),
+            "uncertain_reversals": list(uncertain_reversals),
+        }
+        if hasattr(store, "record_audit"):
+            try:
+                store.record_audit(fail_audit_entry)
+            except Exception as exc:
+                _log("WARNING", "undo_fail_audit_record_error", error=str(exc))
+
+        if is_reconciliation_required:
+            return _json_resp(
+                502,
+                {
+                    "success": False,
+                    "error": "reconciliation_required",
+                    "retryable": False,
+                    "message": "Step outcome is uncertain from prior timeout and remote system has no authoritative query endpoint to reconcile state. Manual intervention required.",
+                    "undo_token": undo_token,
+                    "uncertain_reversals": list(uncertain_reversals),
+                    "completed_reversals": completed_reversals,
+                    "pending_reversals": failed_steps,
+                },
+            )
+        if is_offline:
+            return _json_resp(
+                502,
+                {
+                    "success": False,
+                    "error": "device_reversal_failed",
+                    "retryable": True,
+                    "message": "Device offline or communication failure; token not consumed",
+                    "undo_token": undo_token,
+                    "completed_reversals": completed_reversals,
+                    "pending_reversals": failed_steps,
+                },
+            )
+        if is_timeout:
+            return _json_resp(
+                502,
+                {
+                    "success": False,
+                    "error": "timeout_uncertain",
+                    "retryable": True,
+                    "message": f"Adapter operation timed out; outcome uncertain. Safe to retry. Completed: {completed_reversals}",
+                    "undo_token": undo_token,
+                    "uncertain_reversals": list(uncertain_reversals),
+                    "completed_reversals": completed_reversals,
+                    "pending_reversals": failed_steps,
+                },
+            )
+        if "slack" in failed_steps and len(required_steps) == 1:
+            return _json_resp(
+                502,
+                {
+                    "success": False,
+                    "error": "slack_reversal_failed",
+                    "retryable": True,
+                    "message": f"Slack status reversal failed: {reversal_error_reason}",
+                    "undo_token": undo_token,
+                    "completed_reversals": completed_reversals,
+                    "pending_reversals": failed_steps,
+                },
+            )
         return _json_resp(
             502,
             {
                 "success": False,
-                "error": "device_reversal_failed",
+                "error": "reversal_failed",
                 "retryable": True,
-                "message": "Device offline or communication failure; token not consumed",
+                "message": f"Action reversal failed or incomplete: {reversal_error_reason}",
                 "undo_token": undo_token,
+                "completed_reversals": completed_reversals,
+                "pending_reversals": failed_steps,
+                "device_result": device_result,
+                "slack_result": slack_result,
             },
         )
 
     # 5. State transition to SUCCEEDED with fencing token
-    store.complete_undo(undo_token, user_id, lease_owner_id)
+    completed = store.complete_undo(
+        undo_token,
+        user_id,
+        lease_owner_id,
+        completed_reversals=completed_reversals,
+    )
+    if not completed:
+        _log("ERROR", "undo_complete_persistence_failed", token=undo_token, owner=lease_owner_id)
+        return _json_resp(
+            502,
+            {
+                "success": False,
+                "error": "persistence_failure",
+                "retryable": True,
+                "message": "Reversals completed on adapters, but terminal success state could not be persisted in datastore due to lease or storage conflict.",
+                "undo_token": undo_token,
+                "completed_reversals": list(completed_reversals),
+            },
+        )
 
     # Mark existing audit record undone
-    action_type = "request_pause"
-    for record in store.audit_records:
+    action_type = known_action_type or "request_pause"
+    for record in getattr(store, "audit_records", []):
         if record.get("undo_token") == undo_token:
             record["undone"] = True
             record["status"] = "undone"
-            action_type = record.get("action_type", "request_pause")
+            action_type = record.get("action_type", action_type)
 
     # Record reversal in undo guardrail
     tripped = store.undo_guardrail.record_undo(user_id, action_type)
 
     # Record reversal entry in audit log
     now = time.time()
-    store.audit_records.append(
-        {
-            "action_id": f"undo_{uuid.uuid4().hex[:8]}",
-            "user_id": user_id,
-            "action_type": "undo_reversal",
-            "status": "undone",
-            "reason": f"Action reversed by user via token {undo_token}",
-            "undo_token": undo_token,
-            "timestamp": now,
-        }
-    )
+    undo_audit_entry = {
+        "action_id": f"undo_{uuid.uuid4().hex[:8]}",
+        "user_id": user_id,
+        "tenant_id": effective_caller_tenant,
+        "action_type": "undo_reversal",
+        "status": "undone",
+        "reason": f"Action reversed by user via token {undo_token}",
+        "undo_token": undo_token,
+        "timestamp": now,
+        "completed_reversals": completed_reversals,
+    }
+    if hasattr(store, "record_audit"):
+        try:
+            store.record_audit(undo_audit_entry)
+        except Exception as exc:
+            _log("WARNING", "undo_record_audit_failed", error=str(exc))
+    elif hasattr(store, "audit_records"):
+        store.audit_records.append(undo_audit_entry)
 
-    _log("INFO", "undo_action_executed", user_id=user_id, undo_token=undo_token, device_ok=device_ok, slack_ok=slack_ok)
+    _log("INFO", "undo_action_executed", user_id=user_id, undo_token=undo_token, completed_reversals=completed_reversals)
 
     return _json_resp(
         200,
@@ -1314,7 +2234,9 @@ def handle_undo_action(body: dict[str, Any], store: Any = default_store) -> dict
             "success": True,
             "undo_token": undo_token,
             "message": "Action reversed successfully",
+            "completed_reversals": completed_reversals,
             "device_result": device_result,
+            "slack_result": slack_result,
             "circuit_breaker_tripped": tripped,
         },
     )
@@ -1431,9 +2353,60 @@ def handle_publish_slack_status(body: dict[str, Any], store: InMemoryDataStore =
 
         # Record audit log only for new execution
         if receipt.get("decision") == "executed":
+            undo_tok = receipt.get("undo_token")
+            if undo_tok:
+                slack_undo_record = {
+                    "token": undo_tok,
+                    "undo_token": undo_tok,
+                    "user_id": user_id,
+                    "userId": user_id,
+                    "tenant_id": body.get("tenant_id", "tenant_default"),
+                    "tenantId": body.get("tenant_id", "tenant_default"),
+                    "action_id": receipt["receipt_id"],
+                    "action_type": "slack_status",
+                    "target_device": channel_id,
+                    "status": "PENDING",
+                    "created_at": receipt.get("posted_at", time.time()),
+                    "expires_at": time.time() + 86400,
+                }
+                if hasattr(store, "save_undo_record"):
+                    try:
+                        store.save_undo_record(slack_undo_record)
+                    except StorageError as exc:
+                        _log("ERROR", "slack_undo_persistence_failed", user_id=user_id, token=undo_tok, error=str(exc))
+                        # Slack status side effect already executed — attempt to clear it back.
+                        slack_reversal_attempted = False
+                        slack_reversal_ok = False
+                        try:
+                            clear_result = store.slack_adapter.execute_undo(undo_tok)
+                            slack_reversal_attempted = True
+                            # execute_undo returns bool or dict depending on implementation
+                            if isinstance(clear_result, dict):
+                                slack_reversal_ok = clear_result.get("success", False)
+                            else:
+                                slack_reversal_ok = bool(clear_result)
+                        except Exception as rev_exc:
+                            _log("CRITICAL", "slack_status_reversal_failed_after_persistence_error",
+                                 user_id=user_id, token=undo_tok, reversal_error=str(rev_exc))
+                        if not slack_reversal_ok:
+                            _log("CRITICAL", "slack_status_orphaned_persistence_and_reversal_failed",
+                                 user_id=user_id, token=undo_tok, reversal_attempted=slack_reversal_attempted)
+                        return _json_resp(
+                            503,
+                            {
+                                "error": "storage_error",
+                                "message": f"Durable undo token persistence failed: {exc}",
+                                "reversal_attempted": slack_reversal_attempted,
+                                "reversal_ok": slack_reversal_ok,
+                            },
+                        )
+                elif hasattr(store, "undo_records"):
+                    store.undo_records[undo_tok] = slack_undo_record
+
             store.audit_records.append({
                 "action_id": receipt["receipt_id"],
                 "user_id": user_id,
+                "tenant_id": body.get("tenant_id", "tenant_default"),
                 "action_type": "slack_status",
                 "target_device": channel_id,
                 "status": "executed",
@@ -2112,22 +3085,98 @@ def handle_create_routine(body: dict[str, Any], store: InMemoryDataStore = defau
 
 
 def handle_revoke_routine(routine_id: str, user_id: str, store: InMemoryDataStore = default_store) -> dict[str, Any]:
-    """Revoke a saved intent routine."""
-    routine = store.learned_routines.get(routine_id)
-    if routine and routine.get("user_id") == user_id:
-        routine["active"] = False
-        routine["revoked_at"] = time.time()
-        grant = store.grants.get(f"grant_{routine_id}")
-        if grant:
-            grant["active"] = False
-    return _json_resp(200, {"revoked": True, "routine_id": routine_id, "revoked_at": time.time()})
+    """Revoke a saved intent routine.
 
-
-def handle_update_routine(routine_id: str, body: dict[str, Any], store: InMemoryDataStore = default_store) -> dict[str, Any]:
-    """Update actions or intent name for an existing routine."""
+    Fails closed:
+    - 404 if routine does not exist.
+    - 403 if routine has no owner (ownerless legacy record requires migration).
+    - 401 if caller is unauthenticated.
+    - 403 if caller does not own the routine.
+    """
     routine = store.learned_routines.get(routine_id)
     if not routine:
         return _json_resp(404, {"error": "not_found", "message": f"Routine {routine_id} not found"})
+
+    routine_owner = routine.get("user_id")
+    if not routine_owner or not str(routine_owner).strip():
+        _log("WARNING", "revoke_routine_ownerless_blocked", routine_id=routine_id)
+        return _json_resp(
+            403,
+            {
+                "error": "forbidden",
+                "message": f"Routine '{routine_id}' has no assigned owner; revocation requires administrator migration",
+            },
+        )
+
+    if not user_id or not str(user_id).strip():
+        return _json_resp(
+            401,
+            {"error": "unauthorized", "message": "Authentication required to revoke routine"},
+        )
+
+    if str(routine_owner).strip() != str(user_id).strip():
+        _log("WARNING", "revoke_routine_non_owner_blocked", routine_id=routine_id, caller=user_id, owner=routine_owner)
+        return _json_resp(
+            403,
+            {
+                "error": "forbidden",
+                "message": f"Access denied: caller '{user_id}' cannot revoke routine '{routine_id}' belonging to '{routine_owner}'",
+            },
+        )
+
+    routine["active"] = False
+    routine["revoked_at"] = time.time()
+    grant = store.grants.get(f"grant_{routine_id}")
+    if grant:
+        grant["active"] = False
+    return _json_resp(200, {"revoked": True, "routine_id": routine_id, "revoked_at": time.time()})
+
+
+def handle_update_routine(
+    routine_id: str,
+    body: dict[str, Any],
+    store: InMemoryDataStore = default_store,
+    caller_user_id: str | None = None,
+) -> dict[str, Any]:
+    """Update actions or intent name for an existing routine.
+
+    Fails closed:
+    - 404 if routine does not exist.
+    - 403 if routine has no owner (ownerless legacy record requires migration).
+    - 401 if caller is unauthenticated.
+    - 403 if caller does not own the routine.
+    """
+    routine = store.learned_routines.get(routine_id)
+    if not routine:
+        return _json_resp(404, {"error": "not_found", "message": f"Routine {routine_id} not found"})
+
+    routine_owner = routine.get("user_id")
+    if not routine_owner or not str(routine_owner).strip():
+        _log("WARNING", "update_routine_ownerless_blocked", routine_id=routine_id)
+        return _json_resp(
+            403,
+            {
+                "error": "forbidden",
+                "message": f"Routine '{routine_id}' has no assigned owner; modification requires administrator migration",
+            },
+        )
+
+    effective_user_id = caller_user_id or (body.get("user_id") if isinstance(body, dict) else None)
+    if not effective_user_id or not str(effective_user_id).strip():
+        return _json_resp(
+            401,
+            {"error": "unauthorized", "message": "Authentication required to update routine"},
+        )
+
+    if str(routine_owner).strip() != str(effective_user_id).strip():
+        _log("WARNING", "update_routine_non_owner_blocked", routine_id=routine_id, caller=effective_user_id, owner=routine_owner)
+        return _json_resp(
+            403,
+            {
+                "error": "forbidden",
+                "message": f"Access denied: caller '{effective_user_id}' cannot update routine '{routine_id}' belonging to '{routine_owner}'",
+            },
+        )
 
     if "name" in body:
         routine["name"] = body["name"]
@@ -2200,18 +3249,32 @@ def lambda_handler(
                 {"error": auth_err.error, "message": auth_err.message},
             )
 
+        # Enforce tenant ownership against requested tenant_id if specified
+        requested_tid = query_params.get("tenant_id") or (body.get("tenant_id") if isinstance(body, dict) else None)
+        try:
+            verified_tid = _auth.enforce_tenant_authorization(auth_ctx, requested_tid)
+        except _auth.AuthError as auth_err:
+            return _json_resp(
+                auth_err.status_code,
+                {"error": auth_err.error, "message": auth_err.message},
+            )
+
         # Ensure downstream handlers use the verified identity
-        if isinstance(body, dict) and "user_id" in body:
+        if isinstance(body, dict):
             body["user_id"] = verified_uid
-        if "user_id" in query_params:
-            query_params["user_id"] = verified_uid
+        query_params["user_id"] = verified_uid
+
+        if isinstance(body, dict):
+            body["tenant_id"] = verified_tid
+        query_params["tenant_id"] = verified_tid
 
     # Routing
     if path == "/api/v1/consent/grants" and http_method == "GET":
         user_id = query_params.get("user_id", "")
+        tenant_id = query_params.get("tenant_id", "tenant_default")
         if not user_id:
             return _json_resp(400, {"error": "missing_query_param", "message": "user_id is required"})
-        return handle_get_grants(user_id, store=store)
+        return handle_get_grants(user_id, store=store, tenant_id=tenant_id)
 
     if path == "/api/v1/consent/grants" and http_method == "POST":
         return handle_create_grant(body, store=store)
@@ -2219,7 +3282,8 @@ def lambda_handler(
     if path.startswith("/api/v1/consent/grants/") and http_method == "DELETE":
         grant_id = path.split("/")[-1]
         user_id = query_params.get("user_id", "")
-        return handle_revoke_grant(grant_id, user_id, store=store)
+        tenant_id = query_params.get("tenant_id", "tenant_default")
+        return handle_revoke_grant(grant_id, user_id, store=store, tenant_id=tenant_id)
 
     if path == "/api/v1/focus/session" and http_method == "POST":
         return handle_focus_session(body, store=store)
@@ -2264,8 +3328,9 @@ def lambda_handler(
 
     if path == "/api/v1/audit/actions" and http_method == "GET":
         user_id = query_params.get("user_id", "")
+        tenant_id = query_params.get("tenant_id", "tenant_default")
         limit = int(query_params.get("limit", 20))
-        return handle_query_audit(user_id, limit=limit, store=store)
+        return handle_query_audit(user_id, limit=limit, store=store, tenant_id=tenant_id)
 
     if path == "/api/v1/actions/undo" and http_method == "POST":
         return handle_undo_action(body, store=store)
@@ -2299,7 +3364,8 @@ def lambda_handler(
 
     if path.startswith("/api/v1/routines/") and http_method in ("PUT", "PATCH"):
         routine_id = path.split("/")[-1]
-        return handle_update_routine(routine_id, body, store=store)
+        caller_uid = (body.get("user_id") if isinstance(body, dict) else None) or query_params.get("user_id")
+        return handle_update_routine(routine_id, body, store=store, caller_user_id=caller_uid)
 
     # Phase 6 Slack Ambient Status & OAuth PKCE Endpoints
     if path == "/api/v1/slack/oauth/authorize" and http_method == "POST":

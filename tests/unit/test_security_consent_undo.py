@@ -86,6 +86,7 @@ def test_duplicate_undo_requests_handled_idempotently(clean_store: InMemoryDataS
     clean_store.audit_records.append({
         "action_id": "act_undo_test_01",
         "user_id": "usr_charlie",
+        "tenant_id": "tenant_default",
         "action_type": "request_pause",
         "target_device": "dev_firetv_living_room",
         "status": "executed",
@@ -93,7 +94,7 @@ def test_duplicate_undo_requests_handled_idempotently(clean_store: InMemoryDataS
         "timestamp": time.time(),
     })
 
-    body = {"user_id": "usr_charlie", "undo_token": "token_charlie_undo_999"}
+    body = {"user_id": "usr_charlie", "tenant_id": "tenant_default", "undo_token": "token_charlie_undo_999"}
 
     # First call reverses action
     res1 = handle_undo_action(body, store=clean_store)
@@ -108,6 +109,7 @@ def test_duplicate_undo_requests_handled_idempotently(clean_store: InMemoryDataS
     assert data2["success"] is True
     assert data2.get("idempotent") is True
     assert "already reversed" in data2["message"]
+
 
 
 def test_invalid_undo_token_returns_honest_failure(clean_store: InMemoryDataStore):
@@ -126,6 +128,7 @@ def test_expired_undo_token_rejected_with_410(clean_store: InMemoryDataStore):
     clean_store.audit_records.append({
         "action_id": "act_expired_01",
         "user_id": "usr_elena",
+        "tenant_id": "tenant_default",
         "action_type": "request_pause",
         "status": "executed",
         "undo_token": "token_expired_elena",
@@ -133,11 +136,12 @@ def test_expired_undo_token_rejected_with_410(clean_store: InMemoryDataStore):
         "ttl_seconds": 300,  # 5-minute undo window
     })
 
-    body = {"user_id": "usr_elena", "undo_token": "token_expired_elena"}
+    body = {"user_id": "usr_elena", "tenant_id": "tenant_default", "undo_token": "token_expired_elena"}
     res = handle_undo_action(body, store=clean_store)
     assert res["statusCode"] == 410
     data = json.loads(res["body"])
     assert data["error"] == "undo_token_expired"
+
 
 
 def test_cross_user_undo_attempt_forbidden(clean_store: InMemoryDataStore):
@@ -145,6 +149,7 @@ def test_cross_user_undo_attempt_forbidden(clean_store: InMemoryDataStore):
     clean_store.audit_records.append({
         "action_id": "act_victim_01",
         "user_id": "usr_victim",
+        "tenant_id": "tenant_default",
         "action_type": "request_pause",
         "status": "executed",
         "undo_token": "token_victim_private_token",
@@ -152,12 +157,13 @@ def test_cross_user_undo_attempt_forbidden(clean_store: InMemoryDataStore):
     })
 
     # Attacker tries to reverse victim's token
-    attacker_body = {"user_id": "usr_attacker", "undo_token": "token_victim_private_token"}
+    attacker_body = {"user_id": "usr_attacker", "tenant_id": "tenant_default", "undo_token": "token_victim_private_token"}
     res = handle_undo_action(attacker_body, store=clean_store)
     assert res["statusCode"] == 403
     data = json.loads(res["body"])
     assert data["error"] == "unauthorized"
     assert "belongs to another user" in data["message"]
+
 
 
 def test_underlying_device_reversal_failure_reported_honestly(clean_store: InMemoryDataStore):

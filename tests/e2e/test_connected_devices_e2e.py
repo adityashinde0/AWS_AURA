@@ -172,7 +172,7 @@ def test_phase5_connected_devices_full_lifecycle():
     undo_event = {
         "rawPath": "/api/v1/actions/undo",
         "requestContext": {"http": {"method": "POST"}},
-        "body": json.dumps({"user_id": user_id, "undo_token": undo_token}),
+        "body": json.dumps({"user_id": user_id, "tenant_id": tenant_id, "undo_token": undo_token}),
     }
     undo_resp = lambda_handler(undo_event, store_override=store)
     assert undo_resp["statusCode"] == 200

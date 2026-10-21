@@ -273,6 +273,20 @@ def lambda_handler(
     invoker: Callable[[str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     try:
+        # Handle CORS OPTIONS preflight
+        http_method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method")
+        if http_method == "OPTIONS":
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "content-type": "application/json",
+                    "access-control-allow-origin": "*",
+                    "access-control-allow-methods": "POST,OPTIONS",
+                    "access-control-allow-headers": "Content-Type,Authorization",
+                },
+                "body": json.dumps({"ok": True}),
+            }
+
         if "detail" in event and isinstance(event["detail"], dict):
             raw_body = dict(event["detail"])
             if "purpose" not in raw_body:
@@ -339,6 +353,22 @@ def lambda_handler(
         provider_meta: dict[str, Any] = {}
         try:
             raw_output = model_call(build_prompt(request))
+            if isinstance(raw_output, str):
+                cleaned_output = raw_output.strip()
+                if cleaned_output.startswith("```"):
+                    lines = cleaned_output.splitlines()
+                    if lines and lines[0].startswith("```"):
+                        lines = lines[1:]
+                    if lines and lines[-1].strip() == "```":
+                        lines = lines[:-1]
+                    cleaned_output = "\n".join(lines).strip()
+                try:
+                    raw_output = json.loads(cleaned_output)
+                except Exception as json_err:
+                    raise ValidationError.from_exception_data(
+                        title="FocusProposal",
+                        line_errors=[{"type": "json_invalid", "loc": ("body",), "msg": f"Malformed model JSON: {json_err}", "input": raw_output[:100]}],
+                    )
             if isinstance(raw_output, dict):
                 model_output = dict(raw_output)
                 if "_meta" in model_output:
@@ -346,8 +376,9 @@ def lambda_handler(
             else:
                 model_output = raw_output
             proposal = FocusProposal.model_validate(model_output)
-            source_ids = {item.get("id") for item in request.evidence if isinstance(item, dict) and "id" in item}
-            if not set(proposal.evidence_ids).issubset(source_ids):
+            source_ids = {str(item["id"]).strip() for item in request.evidence if isinstance(item, dict) and item.get("id")}
+            proposal_eids = {str(eid).strip() for eid in proposal.evidence_ids if eid}
+            if not proposal_eids.issubset(source_ids):
                 raise ValueError("Model cited evidence not present in request")
             _log(
                 "INFO",
