@@ -1699,3 +1699,76 @@ body {
   color: var(--sim-text-muted);
   text-align: center;
 }
+
+/* ==========================================================================
+   Mobile Responsive Adjustments for Simulator
+   ========================================================================== */
+@media (max-width: 768px) {
+  .sim-nav-wrapper {
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 0 16px;
+  }
+
+  .sim-nav-links {
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .sim-nav-link {
+    font-size: 0.78rem;
+    padding: 5px 8px;
+  }
+
+  .btn-nav-outline {
+    font-size: 0.75rem;
+    padding: 5px 8px;
+  }
+
+  .theme-pill-btn {
+    font-size: 0.75rem;
+    padding: 5px 8px;
+  }
+
+  .watch-viewport-stage {
+    padding: 24px 12px 18px;
+  }
+
+  .orbit-pebble-frame {
+    max-width: 100%;
+    width: 100%;
+    max-width: 330px;
+    height: auto;
+    aspect-ratio: 350 / 480;
+    padding: 16px;
+  }
+
+  .apple-watch-frame {
+    max-width: 100%;
+    width: 100%;
+    max-width: 320px;
+    height: auto;
+    aspect-ratio: 310 / 460;
+    padding: 16px;
+  }
+
+  .controls-cockpit {
+    padding: 20px 14px;
+  }
+
+  .sim-test-controls-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .sim-brand-badge {
+    display: none;
+  }
+
+  .sim-hero-headline {
+    font-size: 1.8rem;
+  }
+}

@@ -102,6 +102,7 @@ class WatsonxAdapter:
         project_id: str | None = None,
         url: str | None = None,
         mock_mode: bool | None = None,
+        raise_on_error: bool = False,
     ) -> None:
         self.model_id = model_id or os.getenv("WATSONX_MODEL_ID", DEFAULT_MODEL_ID)
         self.api_key = api_key or os.getenv("WATSONX_API_KEY", "")
@@ -112,6 +113,7 @@ class WatsonxAdapter:
             if mock_mode is not None
             else os.getenv("WATSONX_MOCK", "false").lower() in ("true", "1", "yes")
         )
+        self.raise_on_error = raise_on_error
         self._iam_token: str | None = None
 
     # ------------------------------------------------------------------
@@ -146,6 +148,10 @@ class WatsonxAdapter:
 
         # 3. Dispatch to mock or live path
         if self.mock_mode:
+            if os.getenv("WATSONX_SIMULATE_ERROR"):
+                if self.raise_on_error:
+                    raise RuntimeError(os.getenv("WATSONX_SIMULATE_ERROR"))
+                return safe_fallback(request, fallback_reason="not_implemented")
             _log(
                 "INFO",
                 "watsonx_adapter_mock_mode",
@@ -165,6 +171,8 @@ class WatsonxAdapter:
                 session_id=request.session_id,
                 error=type(exc).__name__,
             )
+            if self.raise_on_error:
+                raise
             return safe_fallback(request, fallback_reason="not_implemented")
 
         # 4. Hallucination guard: all cited IDs must be a subset of request evidence
@@ -334,3 +342,58 @@ class WatsonxAdapter:
             raise ValueError("watsonx model cited evidence IDs not present in request")
 
         return proposal
+
+    # ------------------------------------------------------------------
+    # invoke_model — focus_guardian / gateway compatible interface
+    # ------------------------------------------------------------------
+
+    def invoke_model(self, prompt: str) -> dict[str, Any]:
+        """Accept a serialised prompt string and return a raw dict.
+
+        Matches the ``invoker=`` parameter signature expected by focus_guardian
+        and resilience_gateway.
+        """
+        try:
+            prompt_data = json.loads(prompt)
+        except (json.JSONDecodeError, TypeError):
+            raise ValueError("watsonx_adapter.invoke_model received non-JSON prompt")
+
+        evidence = prompt_data.get("evidence", [])
+        purpose = prompt_data.get("purpose", "pre_meeting")
+        explicit_signal = prompt_data.get("explicit_signal", "none")
+        consented_score = float(prompt_data.get("consented_signal_score", 0.0))
+        user_intent = prompt_data.get("user_intent")
+        connected_devices = prompt_data.get("connected_devices", [])
+
+        request = FocusRequest(
+            user_id="watsonx_invoke",
+            session_id=f"wx_invoke_{int(time.time())}",
+            purpose=purpose,
+            explicit_signal=explicit_signal,
+            evidence=evidence,
+            consented_signal_score=consented_score,
+            user_intent=user_intent,
+            connected_devices=connected_devices,
+        )
+
+        proposal = self.generate_proposal(request)
+        return proposal.model_dump(by_alias=True)
+
+
+# ---------------------------------------------------------------------------
+# Module-level invoke_model for IBM watsonx / Granite
+# ---------------------------------------------------------------------------
+
+_default_watsonx_adapter: WatsonxAdapter | None = None
+
+
+def _get_default_watsonx_adapter() -> WatsonxAdapter:
+    global _default_watsonx_adapter
+    if _default_watsonx_adapter is None:
+        _default_watsonx_adapter = WatsonxAdapter()
+    return _default_watsonx_adapter
+
+
+def invoke_model(prompt: str) -> dict[str, Any]:
+    """Module-level invoker compatible with focus_guardian's ``invoker=`` parameter."""
+    return _get_default_watsonx_adapter().invoke_model(prompt)

@@ -17,7 +17,6 @@ root_dir = str(Path(__file__).resolve().parent.parent)
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
-import boto3
 from pydantic import ValidationError
 
 from standalone_agent.calendar_scheduler import (
@@ -31,6 +30,7 @@ scheduler = CalendarScheduler()
 
 
 def get_eventbridge_client():
+    import boto3
     return boto3.client("events", region_name=os.getenv("AWS_REGION", "us-east-1"))
 
 

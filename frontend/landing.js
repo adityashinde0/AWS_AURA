@@ -6,6 +6,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // 0. Theme Switcher (Light / Dark)
   const themeToggleBtn = document.getElementById('theme-toggle-btn');
   const themeLabel = document.getElementById('theme-toggle-label');
+  const mobileDrawerThemeBtn = document.getElementById('mobile-drawer-theme-btn');
+  const mobileDrawerThemeLabel = document.getElementById('mobile-drawer-theme-label');
 
   function updateThemeUI(theme) {
     document.documentElement.setAttribute('data-theme', theme);
@@ -13,17 +15,25 @@ document.addEventListener('DOMContentLoaded', () => {
     if (themeLabel) {
       themeLabel.textContent = theme === 'light' ? 'Dark' : 'Light';
     }
+    if (mobileDrawerThemeLabel) {
+      mobileDrawerThemeLabel.textContent = theme === 'light' ? 'Switch to Dark Mode' : 'Switch to Light Mode';
+    }
   }
 
   const currentTheme = localStorage.getItem('aura-color-theme') || 'dark';
   updateThemeUI(currentTheme);
 
+  function toggleTheme() {
+    const activeTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+    const newTheme = activeTheme === 'light' ? 'dark' : 'light';
+    updateThemeUI(newTheme);
+  }
+
   if (themeToggleBtn) {
-    themeToggleBtn.addEventListener('click', () => {
-      const activeTheme = document.documentElement.getAttribute('data-theme') || 'dark';
-      const newTheme = activeTheme === 'light' ? 'dark' : 'light';
-      updateThemeUI(newTheme);
-    });
+    themeToggleBtn.addEventListener('click', toggleTheme);
+  }
+  if (mobileDrawerThemeBtn) {
+    mobileDrawerThemeBtn.addEventListener('click', toggleTheme);
   }
 
   // 1. Yellow Bento Card Tab Switcher with 5s Auto-Rotation
@@ -167,6 +177,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   suggestionPills.forEach(pill => {
     pill.addEventListener('click', () => {
+      suggestionPills.forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
       const text = pill.textContent.trim();
       if (responses[text]) {
         if (chatBubbleUser) {
@@ -280,6 +292,84 @@ document.addEventListener('DOMContentLoaded', () => {
         e.preventDefault();
         window.open(heroCornerVideo.href, '_blank', 'noopener,noreferrer');
       }
+    });
+  }
+
+  // 5. Mobile Navigation Drawer Controls
+  const mobileMenuBtn = document.getElementById('mobile-menu-btn');
+  const mobileMenuClose = document.getElementById('mobile-menu-close');
+  const mobileNavDrawer = document.getElementById('mobile-nav-drawer');
+  const mobileNavBackdrop = document.getElementById('mobile-nav-backdrop');
+
+  function openMobileMenu() {
+    if (mobileNavDrawer && mobileNavBackdrop) {
+      mobileNavDrawer.classList.add('active');
+      mobileNavBackdrop.classList.add('active');
+      mobileNavDrawer.setAttribute('aria-hidden', 'false');
+      if (mobileMenuBtn) {
+        mobileMenuBtn.setAttribute('aria-expanded', 'true');
+      }
+      document.body.style.overflow = 'hidden';
+    }
+  }
+
+  function closeMobileMenu() {
+    if (mobileNavDrawer && mobileNavBackdrop) {
+      mobileNavDrawer.classList.remove('active');
+      mobileNavBackdrop.classList.remove('active');
+      mobileNavDrawer.setAttribute('aria-hidden', 'true');
+      if (mobileMenuBtn) {
+        mobileMenuBtn.setAttribute('aria-expanded', 'false');
+      }
+      document.body.style.overflow = '';
+    }
+  }
+
+  if (mobileMenuBtn) {
+    mobileMenuBtn.addEventListener('click', () => {
+      const isOpen = mobileNavDrawer && mobileNavDrawer.classList.contains('active');
+      if (isOpen) {
+        closeMobileMenu();
+      } else {
+        openMobileMenu();
+      }
+    });
+  }
+
+  if (mobileMenuClose) {
+    mobileMenuClose.addEventListener('click', closeMobileMenu);
+  }
+
+  if (mobileNavBackdrop) {
+    mobileNavBackdrop.addEventListener('click', closeMobileMenu);
+  }
+
+  // Close mobile drawer when clicking any link within it
+  if (mobileNavDrawer) {
+    const drawerLinks = mobileNavDrawer.querySelectorAll('a');
+    drawerLinks.forEach(link => {
+      link.addEventListener('click', closeMobileMenu);
+    });
+  }
+
+  // Escape key closes mobile menu
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && mobileNavDrawer && mobileNavDrawer.classList.contains('active')) {
+      closeMobileMenu();
+    }
+  });
+
+  // 6. Sticky Bottom Banner Dismissal
+  const bannerDismissBtn = document.getElementById('banner-dismiss-btn');
+  const stickyBanner = document.getElementById('sticky-bottom-banner');
+  if (bannerDismissBtn && stickyBanner) {
+    bannerDismissBtn.addEventListener('click', () => {
+      stickyBanner.style.transition = 'transform 0.3s ease, opacity 0.3s ease';
+      stickyBanner.style.transform = 'translateY(100%)';
+      stickyBanner.style.opacity = '0';
+      setTimeout(() => {
+        stickyBanner.style.display = 'none';
+      }, 300);
     });
   }
 

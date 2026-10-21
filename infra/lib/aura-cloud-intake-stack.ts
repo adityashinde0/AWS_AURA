@@ -11,6 +11,8 @@ import {
   aws_iam as iam,
   aws_apigatewayv2 as apigw2,
   aws_apigatewayv2_integrations as integrations,
+  aws_apigatewayv2_authorizers as authorizers,
+  aws_cognito as cognito,
   aws_wafv2 as wafv2,
 } from 'aws-cdk-lib';
 
@@ -26,6 +28,8 @@ export class AuraCloudIntakeStack extends cdk.Stack {
   public readonly wsRelayFunction: lambda.Function;
   public readonly controlPlaneFunction: lambda.Function;
   public readonly httpApi: apigw2.HttpApi;
+  public readonly userPool?: cognito.UserPool;
+  public readonly userPoolClient?: cognito.UserPoolClient;
   public readonly webAcl: wafv2.CfnWebACL;
 
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -126,13 +130,16 @@ export class AuraCloudIntakeStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'focus_guardian.lambda_handler',
       code: lambda.Code.fromAsset(lambdaDir),
-      timeout: cdk.Duration.seconds(10),
+      timeout: cdk.Duration.seconds(30),
       memorySize: 512,
       environment: {
         AURA_CORE_TABLE: this.coreTable.tableName,
         AURA_EVENT_BUS: this.eventBus.eventBusName,
         AURA_KMS_KEY_ARN: this.kmsKey.keyArn,
         BEDROCK_MODEL_ID: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        AURA_MODEL_ADAPTER: process.env.AURA_MODEL_ADAPTER || 'gateway',
+        WATSONX_SECRET_ARN: process.env.WATSONX_SECRET_ARN || `arn:aws:secretsmanager:${this.region}:${this.account}:secret:aura/watsonx/credentials`,
+        AURA_STORAGE_MODE: process.env.AURA_STORAGE_MODE || 'dynamodb',
       },
     });
 
@@ -170,6 +177,7 @@ export class AuraCloudIntakeStack extends cdk.Stack {
       memorySize: 256,
       environment: {
         AURA_CORE_TABLE: this.coreTable.tableName,
+        AURA_STORAGE_MODE: process.env.AURA_STORAGE_MODE || 'dynamodb',
       },
     });
 
@@ -195,6 +203,19 @@ export class AuraCloudIntakeStack extends cdk.Stack {
         actions: ['bedrock:InvokeModel', 'bedrock:InvokeModelWithResponseStream'],
         resources: [
           `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0`,
+          `arn:aws:bedrock:${this.region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0`,
+        ],
+      })
+    );
+
+    // Secrets Manager access for secondary provider credentials (IBM watsonx)
+    this.focusGuardianFunction.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: 'SecretsManagerWatsonxAccess',
+        effect: iam.Effect.ALLOW,
+        actions: ['secretsmanager:GetSecretValue'],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:aura/watsonx/*`,
         ],
       })
     );
@@ -260,41 +281,264 @@ export class AuraCloudIntakeStack extends cdk.Stack {
       this.focusGuardianFunction
     );
 
-    // REST Routes
+    // Cognito User Pool & HTTP API Authorizer
+    const userPool = new cognito.UserPool(this, 'AuraUserPool', {
+      userPoolName: 'aura-user-pool',
+      selfSignUpEnabled: false,
+      signInAliases: { email: true, username: true },
+      standardAttributes: {
+        email: { required: true, mutable: true },
+      },
+      passwordPolicy: {
+        minLength: 12,
+        requireUppercase: true,
+        requireDigits: true,
+        requireSymbols: true,
+      },
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    const userPoolClient = new cognito.UserPoolClient(this, 'AuraUserPoolClient', {
+      userPool: userPool,
+      userPoolClientName: 'aura-web-client',
+      generateSecret: false,
+      authFlows: {
+        userSrp: true,
+      },
+    });
+
+    const cognitoAuthorizer = new authorizers.HttpUserPoolAuthorizer(
+      'AuraCognitoAuthorizer',
+      userPool,
+      {
+        userPoolClients: [userPoolClient],
+        identitySource: ['$request.header.Authorization'],
+      }
+    );
+
+    // =========================================================================
+    // REST Route Inventory
+    // =========================================================================
+
+    // --- Public Routes (No Authorizer) ---
+    this.httpApi.addRoutes({
+      path: '/health',
+      methods: [apigw2.HttpMethod.GET],
+      integration: controlPlaneIntegration,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/health',
+      methods: [apigw2.HttpMethod.GET],
+      integration: controlPlaneIntegration,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/devices',
+      methods: [apigw2.HttpMethod.GET],
+      integration: controlPlaneIntegration,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/feature-flags',
+      methods: [apigw2.HttpMethod.GET],
+      integration: controlPlaneIntegration,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/slack/oauth/callback',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+    });
+
+    // --- Protected Routes (Cognito JWT Authorizer) ---
     this.httpApi.addRoutes({
       path: '/api/v1/focus/signal',
       methods: [apigw2.HttpMethod.POST],
       integration: focusGuardianIntegration,
+      authorizer: cognitoAuthorizer,
     });
 
     this.httpApi.addRoutes({
       path: '/api/v1/focus/session',
       methods: [apigw2.HttpMethod.POST],
       integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/focus/bank',
+      methods: [apigw2.HttpMethod.GET],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/focus/signals',
+      methods: [apigw2.HttpMethod.GET, apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
     });
 
     this.httpApi.addRoutes({
       path: '/api/v1/consent/grants',
       methods: [apigw2.HttpMethod.GET, apigw2.HttpMethod.POST],
       integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
     });
 
     this.httpApi.addRoutes({
       path: '/api/v1/consent/grants/{grantId}',
       methods: [apigw2.HttpMethod.DELETE],
       integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/devices',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/devices/wearable',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/apns/register',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/feature-flags',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/safety/guardrails',
+      methods: [apigw2.HttpMethod.GET],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/safety/guardrails/reset',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/safety/escalate',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/safety/cancel',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
     });
 
     this.httpApi.addRoutes({
       path: '/api/v1/audit/actions',
       methods: [apigw2.HttpMethod.GET],
       integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
     });
 
     this.httpApi.addRoutes({
       path: '/api/v1/actions/undo',
       methods: [apigw2.HttpMethod.POST],
       integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/preferences',
+      methods: [apigw2.HttpMethod.GET, apigw2.HttpMethod.POST, apigw2.HttpMethod.PATCH],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/routines',
+      methods: [apigw2.HttpMethod.GET, apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/routines/{routineId}',
+      methods: [apigw2.HttpMethod.DELETE, apigw2.HttpMethod.PUT, apigw2.HttpMethod.PATCH],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/slack/oauth/authorize',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/slack/preview',
+      methods: [apigw2.HttpMethod.GET],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/slack/status',
+      methods: [apigw2.HttpMethod.POST, apigw2.HttpMethod.DELETE],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/slack/workspaces',
+      methods: [apigw2.HttpMethod.GET],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/slack/admin-review',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/notifications/feedback',
+      methods: [apigw2.HttpMethod.POST],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/user/export',
+      methods: [apigw2.HttpMethod.GET],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
+    });
+
+    this.httpApi.addRoutes({
+      path: '/api/v1/user/data',
+      methods: [apigw2.HttpMethod.DELETE],
+      integration: controlPlaneIntegration,
+      authorizer: cognitoAuthorizer,
     });
 
     // =========================================================================

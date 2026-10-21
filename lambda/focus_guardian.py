@@ -7,6 +7,7 @@ and falls back safely to 'none' action whenever validation fails.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from collections.abc import Callable
@@ -196,12 +197,72 @@ def safe_fallback(request: FocusRequest, fallback_reason: str = "") -> FocusProp
     return FocusProposal.model_validate(fallback_dict)
 
 
-def invoke_model(_prompt: str) -> dict[str, Any]:
-    """Invoke Bedrock Converse API with JSON schema in deployment.
+# ---------------------------------------------------------------------------
+# Dependency Injection / Model Invoker Registry
+# ---------------------------------------------------------------------------
 
-    In development/testing, can be monkeypatched or replaced.
-    Raises ``NotImplementedError`` when no adapter has been wired; the
-    ``lambda_handler`` catches this and routes to ``safe_fallback``.
+_REGISTERED_INVOKER: Callable[[str], dict[str, Any]] | None = None
+
+
+def register_model_invoker(invoker: Callable[[str], dict[str, Any]] | None) -> None:
+    """Explicitly register a model invoker callable for focus_guardian.
+
+    Passing ``None`` resets the registry to environment-based resolution.
+    """
+    global _REGISTERED_INVOKER
+    _REGISTERED_INVOKER = invoker
+
+
+def get_model_invoker() -> Callable[[str], dict[str, Any]]:
+    """Resolve the effective model invoker.
+
+    Priority:
+    1. Explicitly registered invoker via ``register_model_invoker(...)``.
+    2. Bedrock adapter if ``AURA_MODEL_ADAPTER`` is "bedrock" / "aws" / "live".
+    3. Resilience gateway if ``AURA_MODEL_ADAPTER`` is "gateway".
+    4. Default ``invoke_model`` (raises NotImplementedError when unconfigured,
+       ensuring safe deterministic fallback in offline tests).
+    """
+    if _REGISTERED_INVOKER is not None:
+        return _REGISTERED_INVOKER
+
+    adapter_choice = os.getenv("AURA_MODEL_ADAPTER", "").strip().lower()
+    if adapter_choice in ("bedrock", "aws", "live"):
+        try:
+            import importlib
+            ba = importlib.import_module("lambda.bedrock_adapter")
+            return ba.invoke_model
+        except Exception as exc:
+            _log("WARNING", "focus_guardian_bedrock_import_failed", error=str(exc))
+    elif adapter_choice in ("gateway", "resilience_gateway"):
+        try:
+            import importlib
+            rg = importlib.import_module("lambda.resilience_gateway")
+            gw = rg.make_production_gateway()
+
+            def _gateway_invoker(prompt: str) -> dict[str, Any]:
+                res = gw.invoke(prompt)
+                out = dict(res.payload)
+                out["_meta"] = {
+                    "provider_used": res.provider,
+                    "failover_triggered": res.failover_triggered,
+                    "latency_ms": round(res.latency_ms, 2),
+                }
+                return out
+
+            return _gateway_invoker
+        except Exception as exc:
+            _log("WARNING", "focus_guardian_gateway_import_failed", error=str(exc))
+
+    return invoke_model
+
+
+def invoke_model(_prompt: str) -> dict[str, Any]:
+    """Default fallback model invoker.
+
+    In development/testing when no adapter has been wired, raises
+    ``NotImplementedError``. The ``lambda_handler`` catches this and
+    routes cleanly to ``safe_fallback(..., fallback_reason="not_implemented")``.
     """
     raise NotImplementedError("Configure a Bedrock model adapter in deployment")
 
@@ -230,8 +291,37 @@ def lambda_handler(
                     "body": json.dumps({"error": "invalid_json_body", "details": str(err)}),
                 }
 
+        # HTTP Ingress Authentication & User Authorization Boundary
+        is_http = bool(event.get("requestContext") or event.get("rawPath") or ("headers" in event and "detail" not in event))
+        if is_http:
+            try:
+                import importlib
+                _auth = importlib.import_module("lambda.auth")
+                auth_ctx = _auth.extract_and_validate_auth(event)
+                if not auth_ctx.is_authenticated:
+                    return {
+                        "statusCode": 401,
+                        "headers": {"content-type": "application/json"},
+                        "body": json.dumps({
+                            "error": auth_ctx.error or "unauthorized",
+                            "message": auth_ctx.error_message or "Authentication required for protected endpoint",
+                        }),
+                    }
+                requested_uid = raw_body.get("user_id") if isinstance(raw_body, dict) else None
+                verified_uid = _auth.enforce_user_authorization(auth_ctx, requested_uid)
+                if isinstance(raw_body, dict):
+                    raw_body["user_id"] = verified_uid
+            except Exception as auth_exc:
+                status = getattr(auth_exc, "status_code", 401)
+                err_code = getattr(auth_exc, "error", "unauthorized")
+                return {
+                    "statusCode": status,
+                    "headers": {"content-type": "application/json"},
+                    "body": json.dumps({"error": err_code, "message": str(auth_exc)}),
+                }
+
         request = FocusRequest.model_validate(raw_body)
-        model_call = invoker or invoke_model
+        model_call = invoker or get_model_invoker()
 
         _log(
             "INFO",
@@ -244,8 +334,17 @@ def lambda_handler(
         )
 
         proposal: FocusProposal
+        is_fallback = False
+        fallback_cause: str | None = None
+        provider_meta: dict[str, Any] = {}
         try:
-            model_output = model_call(build_prompt(request))
+            raw_output = model_call(build_prompt(request))
+            if isinstance(raw_output, dict):
+                model_output = dict(raw_output)
+                if "_meta" in model_output:
+                    provider_meta = model_output.pop("_meta")
+            else:
+                model_output = raw_output
             proposal = FocusProposal.model_validate(model_output)
             source_ids = {item.get("id") for item in request.evidence if isinstance(item, dict) and "id" in item}
             if not set(proposal.evidence_ids).issubset(source_ids):
@@ -260,8 +359,12 @@ def lambda_handler(
                 evidence_ids_count=len(proposal.evidence_ids),
             )
         except NotImplementedError:
+            is_fallback = True
+            fallback_cause = "not_implemented"
             proposal = safe_fallback(request, fallback_reason="not_implemented")
         except ValidationError as val_err:
+            is_fallback = True
+            fallback_cause = "validation_error"
             _log(
                 "WARNING",
                 "focus_guardian_model_output_invalid",
@@ -271,6 +374,8 @@ def lambda_handler(
             )
             proposal = safe_fallback(request, fallback_reason="validation_error")
         except ValueError as val_err:
+            is_fallback = True
+            fallback_cause = "hallucinated_evidence"
             _log(
                 "WARNING",
                 "focus_guardian_evidence_hallucination",
@@ -280,7 +385,20 @@ def lambda_handler(
             )
             proposal = safe_fallback(request, fallback_reason="hallucinated_evidence")
         except TypeError:
+            is_fallback = True
+            fallback_cause = "type_error"
             proposal = safe_fallback(request, fallback_reason="type_error")
+        except Exception as exc:
+            is_fallback = True
+            fallback_cause = "provider_error"
+            _log(
+                "WARNING",
+                "focus_guardian_provider_error",
+                user_id=request.user_id,
+                session_id=request.session_id,
+                error=str(exc),
+            )
+            proposal = safe_fallback(request, fallback_reason="provider_error")
 
         _log(
             "INFO",
@@ -290,12 +408,25 @@ def lambda_handler(
             recommended_action=proposal.recommended_action,
             is_distracted=proposal.is_distracted,
             policy_required=True,
+            fallback_active=is_fallback,
         )
         dumped_proposal = proposal.model_dump(by_alias=True)
         resp_body: dict[str, Any] = {
             "proposal": dumped_proposal,
             "policy_required": True,
+            "inference_mode": "fallback" if is_fallback else "live_model",
+            "fallback_active": is_fallback,
         }
+        if provider_meta:
+            resp_body["provider_used"] = provider_meta.get("provider_used")
+            resp_body["failover_triggered"] = provider_meta.get("failover_triggered", False)
+        elif not is_fallback:
+            resp_body["provider_used"] = "bedrock"
+            resp_body["failover_triggered"] = False
+
+        if is_fallback:
+            resp_body["fallback_reason"] = fallback_cause or "unspecified"
+
         if hasattr(proposal, "device_actions") and getattr(proposal, "device_actions"):
             resp_body["device_actions"] = getattr(proposal, "device_actions")
         elif "device_actions" in dumped_proposal:

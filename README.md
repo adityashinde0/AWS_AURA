@@ -12,7 +12,7 @@
 [![Nordic nRF5340](https://img.shields.io/badge/Nordic-nRF5340_BLE_5.3-00A9CE?logo=nordicsemiconductor&logoColor=white)](firmware/)
 [![React Native](https://img.shields.io/badge/React_Native-Expo_Bridge-61DAFB?logo=react&logoColor=black)](mobile/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests Passing](https://img.shields.io/badge/Tests-301_Passing-brightgreen?logo=pytest&logoColor=white)](tests/)
+[![Tests Passing](https://img.shields.io/badge/Tests-393_Passing-brightgreen?logo=pytest&logoColor=white)](tests/)
 [![Official Teaser](https://img.shields.io/badge/YouTube-Official_Teaser-FF0000?logo=youtube&logoColor=white)](https://youtu.be/TGYBgcJrPzw)
 [![Zero-Surveillance](https://img.shields.io/badge/Privacy-Zero--Surveillance_Certified-9cf)](docs/SECURITY_REVIEW_CERTIFICATION.md)
 [![Hardware Dossier PDF](https://img.shields.io/badge/Hardware_Dossier-PDF_Spec_6.35MB-red?logo=adobe-acrobat-reader&logoColor=white)](docs/hardware/AURA_ORBIT_HARDWARE_SPECIFICATION.pdf)
@@ -191,7 +191,7 @@ Project AURA is engineered to satisfy all five core pillars of the **AWS Well-Ar
   │     COST OPTIMIZATION     │     OPERATIONAL EXCELLENCE    │
   │  • Pay-per-Request Dynamo │  • Structured JSON Logging    │
   │  • 30-Day Automated TTL   │  • CloudWatch Insights Tracing│
-  │  • Serverless Scale-to-0  │  • 301 Automated Tests (100%) │
+  │  • Serverless Scale-to-0  │  • 393 Automated Tests (100%) │
   └───────────────────────────┴───────────────────────────────┘
 ```
 
@@ -199,7 +199,7 @@ Project AURA is engineered to satisfy all five core pillars of the **AWS Well-Ar
 2. **Reliability:** Multi-LLM failover (Bedrock + Watsonx), SQS Dead Letter Queues, DynamoDB Point-in-Time Recovery, deterministic circuit breaking.
 3. **Performance Efficiency:** Graviton ARM64 compute, sub-50ms WebSocket telemetry streaming, HTTP/2 Apple push dispatch, 420ms failover inference.
 4. **Cost Optimization:** 100% serverless scale-to-zero compute, DynamoDB On-Demand billing, automated 30-day TTL data retirement.
-5. **Operational Excellence:** Structured JSON logging, cross-service correlation IDs, automated CDK v2 synthesis, and 301 automated contract/unit tests.
+5. **Operational Excellence:** Structured JSON logging, cross-service correlation IDs, automated CDK v2 synthesis, and 393 automated contract/unit tests.
 
 ---
 
@@ -291,7 +291,7 @@ Project AURA underwent a comprehensive architectural modernization sprint, lever
 │                   ENTERPRISE MODERNIZATION & RELIABILITY METRICS                       │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │ • Cross-File Context: Unified Lambda handlers & contract test suites.                  │
-│ • Zero Regressions: 10 new contract tests authored; 301 total tests passing (100%).    │
+│ • Zero Regressions: 56 new blocker/contract tests; 393 total tests passing (100%).     │
 │ • Backward Compatibility: Maintained safe_fallback() signatures with added telemetry.  │
 │ • Grounded Verification: Continuous refactor-then-verify validation loops.              │
 └────────────────────────────────────────────────────────────────────────────────────────┘
@@ -425,12 +425,14 @@ AURA/
 │   ├── bin/                    # CDK app entrypoint
 │   └── lib/                    # 11-service cloud intake stack definition
 ├── lambda/                     # AWS Lambda Serverless Handlers (Python 3.11 Graviton)
+│   ├── auth.py                 # Cognito RS256 JWKS authentication & ownership gate
 │   ├── focus_guardian.py       # T-5 meeting prep & distraction evaluator
+│   ├── resilience_gateway.py   # Multi-LLM provider failover & timeout orchestrator
 │   ├── apns_dispatcher.py      # Apple Push Notification HTTP/2 dispatcher
 │   ├── watsonx_adapter.py      # IBM Watsonx Granite 3.0 resilience adapter
 │   ├── bedrock_adapter.py      # Amazon Bedrock Claude 3.5 Sonnet adapter
 │   ├── websocket_handler.py    # API Gateway WebSocket session manager
-│   └── control_plane.py        # Consent, preferences, and audit REST handler
+│   └── control_plane.py        # Consent, durable DynamoDB persistence & audit REST
 ├── standalone_agent/           # Edge Companion & Policy Engine (Python)
 │   ├── policy_engine.py        # Sole deterministic execution gatekeeper
 │   ├── redactor.py             # Client-side PII scrubber & anonymizer
@@ -445,7 +447,7 @@ AURA/
 │   ├── MODERNIZATION_REPORT.md # Production architecture modernization report
 │   ├── RUNBOOKS.md             # Tier-1 & Tier-2 operational recovery runbooks
 │   └── SECURITY_REVIEW_CERTIFICATION.md # Threat models & boundary review
-└── tests/                      # Automated Test Suite (301 Passing Tests)
+└── tests/                      # Automated Test Suite (393 Passing Tests)
     ├── contract/               # Contract & schema compliance tests
     ├── unit/                   # Unit tests across handlers, adapters, and policies
     └── e2e/                    # End-to-end integration and lifecycle tests
@@ -458,7 +460,7 @@ AURA/
 The test suite enforces contract validation, Pydantic schemas, and multi-provider failover without requiring external cloud mocks:
 
 ```bash
-# Execute the complete automated test suite (301 passing tests)
+# Execute the complete automated test suite (393 passing tests)
 pytest --ignore=tests/e2e/test_pre_meeting_e2e.py \
        --ignore=tests/unit/test_bedrock_adapter.py \
        --ignore=tests/unit/test_calendar_adapter.py
@@ -472,14 +474,17 @@ python -m standalone_agent.live_demo --auto
 
 ### Verified Test Suite Breakdown
 
-* **Total Passing Tests:** **301 Passed**, 0 Failures (100% pass rate).
+* **Total Passing Tests:** **393 Passed**, 0 Failures (100% pass rate).
 * **Key Verification Areas:**
-  - **AWS CDK v2 CloudFormation Synthesis:** Validates exact 11-service resource graph (`tests/unit/test_cdk_synth.py`)
+  - **AWS CDK v2 CloudFormation Synthesis & Route Inventory:** Validates exact 11-service resource graph and 100% explicit HTTP API route authorization mapping (`tests/unit/test_cdk_routing_inventory.py`, `tests/contract/test_cdk_route_contract.py`)
+  - **Cognito RS256 JWKS Cryptographic Authentication:** Validates real RSA-signed JWTs, rejects forged, expired, algorithm-confusion (`none`/`HS256`), and cross-user attempts (`tests/unit/test_auth_enforcement.py`)
+  - **DynamoDB Single-Table Durable Persistence:** Verifies cold-start survival, user isolation boundaries, and conditional lease state transitions with fencing tokens (`tests/unit/test_dynamodb_persistence.py`, `tests/unit/test_durable_undo_statemachine.py`)
+  - **Multi-LLM Resilience Gateway & Execution Budget:** Tests Bedrock Claude 3.5 Sonnet to Watsonx Granite 3.0 failover within Lambda's 30s budget (`tests/unit/test_resilience_gateway_wiring.py`, `tests/unit/test_production_gateway_wiring.py`)
+  - **Truthful Frontend Connected-Mode Error Handling:** Verifies stop-on-failure behavior across HTTP 401, 403, 404, 500, and network failures with zero fake local simulation (`tests/unit/test_frontend_connected_error_handling.py`)
   - **Modernization Contract Tests:** Verifies structured JSON logging, token validation, and correlation IDs (`tests/contract/test_modernization_contract.py`)
   - **APNs Push Dispatcher Contract:** HTTP/2 push notification payload validation (`tests/contract/test_apns_dispatcher_contract.py`)
   - **User Preferences & Consent Contracts:** Verifies granular capability grants (`tests/contract/test_user_preferences_contract.py`)
   - **Safety Escalation Protocol:** Tests the 60-second emergency cancel window (`tests/contract/test_safety_escalation_contract.py`)
-  - **Multi-LLM Resilience Gateway:** Tests Bedrock-to-Watsonx failover and circuit breaker states (`tests/unit/test_resilience_gateway.py`)
   - **Strict Evidence Grounding Guard:** Enforces zero evidence hallucination in model proposals (`tests/unit/test_focus_guardian.py`)
 
 ---

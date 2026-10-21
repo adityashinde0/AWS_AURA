@@ -84,3 +84,9 @@ xcuserdata/
 *.ipa
 *.dSYM/
 *.dSYM.zip
+
+# IDE, Agent & Tooling Artifacts
+.agents/
+.gemini/
+.antigravity/
+*.orig

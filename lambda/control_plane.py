@@ -39,6 +39,15 @@ from standalone_agent.slack_adapter import (
 )
 from standalone_agent.sms_adapter import SmsAdapter
 
+import importlib
+try:
+    _auth = importlib.import_module("lambda.auth")
+except Exception:
+    try:
+        import auth as _auth
+    except Exception:
+        _auth = None
+
 # Optional boto3 clients when running in live AWS Lambda
 try:
     import boto3
@@ -49,7 +58,260 @@ except Exception:
 CORE_TABLE_NAME = os.getenv("AURA_CORE_TABLE", "AuraCoreTable")
 
 
-class InMemoryDataStore:
+# ---------------------------------------------------------------------------
+# Storage Errors & DataStore Abstraction
+# ---------------------------------------------------------------------------
+
+class StorageError(Exception):
+    """Raised when durable storage operations fail."""
+
+
+class StorageUnavailableError(StorageError):
+    """Raised when durable storage is required in production but unavailable."""
+
+
+class DataStore:
+    """Base interface for AURA storage implementations."""
+
+
+class DynamoDBDataStore(DataStore):
+    """Production-grade durable DynamoDB single-table data store.
+
+    Conforms to schemas/dynamodb/table_schema.json:
+    - ConsentGrant: PK=TENANT#{tenant_id}#USER#{user_id}, SK=GRANT#{action_type}
+    - FocusSession: PK=USER#{user_id}, SK=SESSION#{session_id}
+    - ActionAudit: PK=TENANT#{tenant_id}#USER#{user_id}, SK=AUDIT#{timestamp}#{action_id}
+    - UndoRecord: PK=UNDO#{undo_token}, SK=RECORD
+    - UserPreferences: PK=USER#{user_id}, SK=PREFERENCES
+    """
+
+    def __init__(self, table: Any | None = None, table_name: str | None = None) -> None:
+        if table is not None:
+            self.table = table
+        else:
+            try:
+                import boto3
+                target_table = table_name or CORE_TABLE_NAME
+                self.table = boto3.resource("dynamodb").Table(target_table)
+            except Exception as exc:
+                raise StorageUnavailableError(f"Failed to initialize DynamoDB table: {exc}") from exc
+
+        self.device_adapter: DeviceSimulatorAdapter = DeviceSimulatorAdapter()
+        self.feature_flags: FeatureFlagManager = FeatureFlagManager()
+        self.undo_guardrail: UndoRateGuardrail = UndoRateGuardrail()
+        self.slack_adapter: SlackAdapter = SlackAdapter()
+        self.sms_adapter: SmsAdapter = SmsAdapter()
+        self.learned_routines: dict[str, dict[str, Any]] = {}
+        self.wearable_bindings: dict[str, dict[str, Any]] = {}
+        self.escalation_timestamps: dict[str, float] = {}
+        self.pending_escalations: dict[str, dict[str, Any]] = {}
+
+    def get_grants(self, user_id: str, tenant_id: str = "tenant_default") -> list[dict[str, Any]]:
+        pk = f"TENANT#{tenant_id}#USER#{user_id}"
+        try:
+            res = self.table.query(
+                ExpressionAttributeNames={"#pk": "PK", "#sk": "SK"},
+                ExpressionAttributeValues={":pk": pk, ":sk_prefix": "GRANT#"},
+                KeyConditionExpression="#pk = :pk AND begins_with(#sk, :sk_prefix)",
+            )
+            return [it for it in res.get("Items", []) if it.get("active", True)]
+        except Exception as exc:
+            raise StorageError(f"DynamoDB get_grants failed: {exc}") from exc
+
+    def save_grant(self, grant: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = grant.get("tenant_id", "tenant_default")
+        user_id = grant["user_id"]
+        action_type = grant.get("action_type") or grant.get("grant_id")
+        grant_copy = dict(grant)
+        grant_copy["PK"] = f"TENANT#{tenant_id}#USER#{user_id}"
+        grant_copy["SK"] = f"GRANT#{action_type}"
+        grant_copy["ttl"] = int(grant_copy.get("expires_at", time.time() + 86400 * 30))
+        try:
+            self.table.put_item(Item=grant_copy)
+            return grant_copy
+        except Exception as exc:
+            raise StorageError(f"DynamoDB save_grant failed: {exc}") from exc
+
+    def revoke_grant(self, grant_id: str, user_id: str, tenant_id: str = "tenant_default") -> bool:
+        grants = self.get_grants(user_id, tenant_id=tenant_id)
+        matching = [g for g in grants if g.get("grant_id") == grant_id or g.get("action_type") == grant_id]
+        if not matching:
+            return False
+        for g in matching:
+            try:
+                self.table.update_item(
+                    Key={"PK": g["PK"], "SK": g["SK"]},
+                    UpdateExpression="SET #active = :false, revoked_at = :now",
+                    ExpressionAttributeNames={"#active": "active"},
+                    ExpressionAttributeValues={":false": False, ":now": int(time.time())},
+                )
+            except Exception as exc:
+                raise StorageError(f"DynamoDB revoke_grant failed: {exc}") from exc
+        return True
+
+    def get_audit_records(self, user_id: str, tenant_id: str = "tenant_default", limit: int = 20) -> list[dict[str, Any]]:
+        pk = f"TENANT#{tenant_id}#USER#{user_id}"
+        try:
+            res = self.table.query(
+                ExpressionAttributeNames={"#pk": "PK", "#sk": "SK"},
+                ExpressionAttributeValues={":pk": pk, ":sk_prefix": "AUDIT#"},
+                KeyConditionExpression="#pk = :pk AND begins_with(#sk, :sk_prefix)",
+                ScanIndexForward=False,
+                Limit=limit,
+            )
+            return res.get("Items", [])
+        except Exception as exc:
+            raise StorageError(f"DynamoDB get_audit_records failed: {exc}") from exc
+
+    def record_audit(self, record: dict[str, Any]) -> dict[str, Any]:
+        tenant_id = record.get("tenant_id", "tenant_default")
+        user_id = record["user_id"]
+        now = record.get("timestamp", time.time())
+        action_id = record.get("action_id") or uuid.uuid4().hex[:8]
+        rec_copy = dict(record)
+        rec_copy["PK"] = f"TENANT#{tenant_id}#USER#{user_id}"
+        rec_copy["SK"] = f"AUDIT#{int(now)}#{action_id}"
+        rec_copy["GSI1PK"] = f"USER#{user_id}#ACTION_TYPE#{record.get('action_type', 'none')}"
+        rec_copy["GSI1SK"] = f"AUDIT#{int(now)}"
+        rec_copy["ttl"] = int(now + 86400 * 90)
+        try:
+            self.table.put_item(Item=rec_copy)
+            return rec_copy
+        except Exception as exc:
+            raise StorageError(f"DynamoDB record_audit failed: {exc}") from exc
+
+    def get_undo_record(self, undo_token: str) -> dict[str, Any] | None:
+        try:
+            res = self.table.get_item(Key={"PK": f"UNDO#{undo_token}", "SK": "RECORD"})
+            return res.get("Item")
+        except Exception as exc:
+            raise StorageError(f"DynamoDB get_undo_record failed: {exc}") from exc
+
+    def acquire_undo_lease(
+        self,
+        undo_token: str,
+        user_id: str,
+        lease_owner_id: str,
+        lease_duration: float = 30.0,
+        tenant_id: str = "tenant_default",
+    ) -> tuple[bool, int, str | None]:
+        now = time.time()
+        try:
+            self.table.put_item(
+                Item={
+                    "PK": f"UNDO#{undo_token}",
+                    "SK": "RECORD",
+                    "userId": user_id,
+                    "tenantId": tenant_id,
+                    "status": "IN_PROGRESS",
+                    "leaseOwnerId": lease_owner_id,
+                    "leaseExpiresAt": int(now + lease_duration),
+                    "timestamp": int(now),
+                    "ttl": int(now + 86400 * 30),
+                },
+                ConditionExpression=(
+                    "attribute_not_exists(PK) "
+                    "OR (#status = :failed) "
+                    "OR (#status = :in_progress AND leaseExpiresAt < :now)"
+                ),
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":failed": "FAILED",
+                    ":in_progress": "IN_PROGRESS",
+                    ":now": int(now),
+                },
+            )
+            return True, 200, None
+        except Exception as exc:
+            if "ConditionalCheckFailed" in type(exc).__name__ or "ConditionalCheckFailed" in str(exc):
+                rec = self.get_undo_record(undo_token)
+                if rec and rec.get("status") == "SUCCEEDED":
+                    return False, 200, "Action was already reversed (idempotent)"
+                return False, 409, "Undo reversal currently in progress, please retry shortly"
+            raise StorageError(f"DynamoDB acquire_undo_lease failed: {exc}") from exc
+
+    def complete_undo(self, undo_token: str, user_id: str, lease_owner_id: str) -> bool:
+        now = time.time()
+        try:
+            self.table.update_item(
+                Key={"PK": f"UNDO#{undo_token}", "SK": "RECORD"},
+                UpdateExpression="SET #status = :succeeded, completedAt = :now",
+                ConditionExpression="#status = :in_progress AND leaseOwnerId = :owner",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":succeeded": "SUCCEEDED",
+                    ":in_progress": "IN_PROGRESS",
+                    ":owner": lease_owner_id,
+                    ":now": int(now),
+                },
+            )
+            return True
+        except Exception as exc:
+            _log("WARNING", "dynamodb_complete_undo_failed", error=str(exc))
+            return False
+
+    def fail_undo(self, undo_token: str, user_id: str, lease_owner_id: str, error_reason: str = "failed") -> bool:
+        now = time.time()
+        try:
+            self.table.update_item(
+                Key={"PK": f"UNDO#{undo_token}", "SK": "RECORD"},
+                UpdateExpression="SET #status = :failed, failedReason = :reason, leaseExpiresAt = :now",
+                ConditionExpression="#status = :in_progress AND leaseOwnerId = :owner",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":failed": "FAILED",
+                    ":in_progress": "IN_PROGRESS",
+                    ":owner": lease_owner_id,
+                    ":reason": error_reason,
+                    ":now": int(now),
+                },
+            )
+            return True
+        except Exception as exc:
+            _log("WARNING", "dynamodb_fail_undo_failed", error=str(exc))
+            return False
+
+    def get_focus_session(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        try:
+            res = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": f"SESSION#{session_id}"})
+            return res.get("Item")
+        except Exception as exc:
+            raise StorageError(f"DynamoDB get_focus_session failed: {exc}") from exc
+
+    def save_focus_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        sess_copy = dict(session)
+        sess_copy["PK"] = f"USER#{session['user_id']}"
+        sess_copy["SK"] = f"SESSION#{session['session_id']}"
+        sess_copy["ttl"] = int(session.get("expires_at", time.time() + 86400 * 30))
+        try:
+            self.table.put_item(Item=sess_copy)
+            return sess_copy
+        except Exception as exc:
+            raise StorageError(f"DynamoDB save_focus_session failed: {exc}") from exc
+
+    def get_preferences(self, user_id: str) -> dict[str, Any]:
+        try:
+            res = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "PREFERENCES"})
+            return res.get("Item", {}).get("preferences", {})
+        except Exception as exc:
+            raise StorageError(f"DynamoDB get_preferences failed: {exc}") from exc
+
+    def update_preferences(self, user_id: str, preferences: dict[str, Any]) -> dict[str, Any]:
+        try:
+            item = {
+                "PK": f"USER#{user_id}",
+                "SK": "PREFERENCES",
+                "userId": user_id,
+                "preferences": preferences,
+                "updated_at": int(time.time()),
+            }
+            self.table.put_item(Item=item)
+            return preferences
+        except Exception as exc:
+            raise StorageError(f"DynamoDB update_preferences failed: {exc}") from exc
+
+
+class InMemoryDataStore(DataStore):
     """In-memory data store for local simulation, contract testing, and offline modes."""
 
     def __init__(self) -> None:
@@ -57,6 +319,7 @@ class InMemoryDataStore:
         self.sessions: dict[str, dict[str, Any]] = {}
         self.audit_records: list[dict[str, Any]] = []
         self.undone_tokens: set[str] = set()
+        self.undo_records: dict[str, dict[str, Any]] = {}
         self.deep_work_banks: dict[str, dict[str, Any]] = {}  # user_id -> {"balance": int, "transactions": list}
         self.signal_consents: dict[str, set[str]] = {}  # user_id -> set of signal types
         self.device_adapter: DeviceSimulatorAdapter = DeviceSimulatorAdapter()
@@ -101,6 +364,122 @@ class InMemoryDataStore:
         self.escalation_timestamps: dict[str, float] = {}
         # Pending safety escalations (60s cancel window): user_id -> details
         self.pending_escalations: dict[str, dict[str, Any]] = {}
+        self.preferences: dict[str, dict[str, Any]] = {}
+
+    def get_grants(self, user_id: str, tenant_id: str = "tenant_default") -> list[dict[str, Any]]:
+        return [g for g in self.grants.values() if g.get("user_id") == user_id and g.get("active", True)]
+
+    def save_grant(self, grant: dict[str, Any]) -> dict[str, Any]:
+        gid = grant.get("grant_id") or f"grant_{uuid.uuid4().hex[:10]}"
+        grant["grant_id"] = gid
+        self.grants[gid] = grant
+        return grant
+
+    def revoke_grant(self, grant_id: str, user_id: str, tenant_id: str = "tenant_default") -> bool:
+        grant = self.grants.get(grant_id)
+        if grant and grant.get("user_id") == user_id:
+            grant["active"] = False
+            grant["revoked_at"] = time.time()
+            return True
+        return False
+
+    def get_audit_records(self, user_id: str, tenant_id: str = "tenant_default", limit: int = 20) -> list[dict[str, Any]]:
+        records = [r for r in self.audit_records if r.get("user_id") == user_id]
+        records.sort(key=lambda r: r.get("timestamp", 0), reverse=True)
+        return records[:limit]
+
+    def record_audit(self, record: dict[str, Any]) -> dict[str, Any]:
+        self.audit_records.append(record)
+        return record
+
+    def get_undo_record(self, undo_token: str) -> dict[str, Any] | None:
+        return self.undo_records.get(undo_token)
+
+    def acquire_undo_lease(
+        self,
+        undo_token: str,
+        user_id: str,
+        lease_owner_id: str,
+        lease_duration: float = 30.0,
+        tenant_id: str = "tenant_default",
+    ) -> tuple[bool, int, str | None]:
+        now = time.time()
+        rec = self.undo_records.get(undo_token)
+        if rec:
+            if rec.get("status") == "SUCCEEDED" or undo_token in self.undone_tokens:
+                return False, 200, "Action was already reversed (idempotent)"
+            if rec.get("status") == "IN_PROGRESS" and now < rec.get("lease_expires_at", 0):
+                return False, 409, "Undo reversal currently in progress, please retry shortly"
+
+        self.undo_records[undo_token] = {
+            "token": undo_token,
+            "user_id": user_id,
+            "tenant_id": tenant_id,
+            "status": "IN_PROGRESS",
+            "lease_owner_id": lease_owner_id,
+            "lease_expires_at": now + lease_duration,
+            "created_at": rec.get("created_at", now) if rec else now,
+            "retry_count": rec.get("retry_count", 0) if rec else 0,
+        }
+        return True, 200, None
+
+    def complete_undo(self, undo_token: str, user_id: str, lease_owner_id: str) -> bool:
+        rec = self.undo_records.get(undo_token)
+        if rec and rec.get("status") == "IN_PROGRESS" and rec.get("lease_owner_id") == lease_owner_id:
+            rec["status"] = "SUCCEEDED"
+            rec["completed_at"] = time.time()
+            self.undone_tokens.add(undo_token)
+            return True
+        return False
+
+    def fail_undo(self, undo_token: str, user_id: str, lease_owner_id: str, error_reason: str = "failed") -> bool:
+        rec = self.undo_records.get(undo_token)
+        if rec and rec.get("status") == "IN_PROGRESS" and rec.get("lease_owner_id") == lease_owner_id:
+            rec["status"] = "FAILED"
+            rec["failed_reason"] = error_reason
+            rec["lease_expires_at"] = time.time()
+            rec["retry_count"] = rec.get("retry_count", 0) + 1
+            return True
+        return False
+
+    def get_focus_session(self, user_id: str, session_id: str) -> dict[str, Any] | None:
+        return self.sessions.get(session_id)
+
+    def save_focus_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        self.sessions[session["session_id"]] = session
+        return session
+
+    def get_preferences(self, user_id: str) -> dict[str, Any]:
+        return self.preferences.get(user_id, {})
+
+    def update_preferences(self, user_id: str, preferences: dict[str, Any]) -> dict[str, Any]:
+        self.preferences[user_id] = preferences
+        return preferences
+
+
+def get_datastore(store_override: Any | None = None) -> Any:
+    """Resolve data store according to environment configuration.
+
+    In production (AWS Lambda or AURA_STORAGE_MODE=dynamodb), requires durable DynamoDB
+    and raises StorageUnavailableError if unavailable. Never silently falls back.
+    """
+    if store_override is not None:
+        return store_override
+
+    storage_mode = os.getenv("AURA_STORAGE_MODE", "").strip().lower()
+    is_live_aws = bool(os.getenv("AWS_LAMBDA_FUNCTION_NAME") or os.getenv("AWS_DEFAULT_REGION"))
+
+    if storage_mode == "dynamodb" or (is_live_aws and storage_mode != "local"):
+        table_name = os.getenv("AURA_CORE_TABLE", CORE_TABLE_NAME)
+        try:
+            return DynamoDBDataStore(table_name=table_name)
+        except Exception as exc:
+            _log("ERROR", "dynamodb_initialization_failed", error=str(exc), table=table_name)
+            raise StorageUnavailableError(
+                f"Durable DynamoDB storage '{table_name}' required in production is unavailable: {exc}"
+            ) from exc
+
+    return default_store
 
 
 # ---------------------------------------------------------------------------
@@ -136,12 +515,15 @@ def _json_resp(status: int, data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def handle_get_grants(user_id: str, store: InMemoryDataStore = default_store) -> dict[str, Any]:
-    active_grants = [g for g in store.grants.values() if g.get("user_id") == user_id and g.get("active", True)]
+def handle_get_grants(user_id: str, store: Any = default_store) -> dict[str, Any]:
+    try:
+        active_grants = store.get_grants(user_id)
+    except StorageError as exc:
+        return _json_resp(503, {"error": "storage_error", "message": str(exc)})
     return _json_resp(200, {"user_id": user_id, "grants": active_grants})
 
 
-def handle_create_grant(body: dict[str, Any], store: InMemoryDataStore = default_store) -> dict[str, Any]:
+def handle_create_grant(body: dict[str, Any], store: Any = default_store) -> dict[str, Any]:
     user_id = body.get("user_id")
     action_type = body.get("action_type")
     scope = body.get("scope")
@@ -170,21 +552,22 @@ def handle_create_grant(body: dict[str, Any], store: InMemoryDataStore = default
         "created_at": now,
         "expires_at": now + ttl_seconds,
     }
-    store.grants[grant_id] = grant
-    return _json_resp(201, grant)
+    try:
+        saved_grant = store.save_grant(grant)
+    except StorageError as exc:
+        return _json_resp(503, {"error": "storage_error", "message": str(exc)})
+    return _json_resp(201, saved_grant)
 
 
-def handle_revoke_grant(grant_id: str, user_id: str, store: InMemoryDataStore = default_store) -> dict[str, Any]:
-    grant = store.grants.get(grant_id)
-    if not grant or grant.get("user_id") != user_id:
-        return _json_resp(200, {"revoked": True, "grant_id": grant_id, "revoked_at": time.time()})
-
-    grant["active"] = False
-    grant["revoked_at"] = time.time()
-    return _json_resp(200, {"revoked": True, "grant_id": grant_id, "revoked_at": grant["revoked_at"]})
+def handle_revoke_grant(grant_id: str, user_id: str, store: Any = default_store) -> dict[str, Any]:
+    try:
+        store.revoke_grant(grant_id, user_id)
+    except StorageError as exc:
+        return _json_resp(503, {"error": "storage_error", "message": str(exc)})
+    return _json_resp(200, {"revoked": True, "grant_id": grant_id, "revoked_at": time.time()})
 
 
-def handle_focus_session(body: dict[str, Any], store: InMemoryDataStore = default_store) -> dict[str, Any]:
+def handle_focus_session(body: dict[str, Any], store: Any = default_store) -> dict[str, Any]:
     user_id = body.get("user_id")
     action = body.get("action")
 
@@ -205,35 +588,58 @@ def handle_focus_session(body: dict[str, Any], store: InMemoryDataStore = defaul
             "distraction_score": 0.0,
             "accumulated_points": 5,
         }
-        store.sessions[session_id] = session
+        try:
+            if hasattr(store, "save_focus_session"):
+                store.save_focus_session(session)
+            elif hasattr(store, "sessions"):
+                store.sessions[session_id] = session
+        except StorageError as exc:
+            return _json_resp(503, {"error": "storage_error", "message": str(exc)})
 
         # Award initial deep work bank start points
-        bank = store.deep_work_banks.setdefault(user_id, {"balance": 10, "transactions": []})
-        bank["balance"] += 5
-        bank["transactions"].append(
-            {
-                "transaction_id": f"tx_{uuid.uuid4().hex[:8]}",
-                "session_id": session_id,
-                "delta": 5,
-                "reason": f"Focus session started ({duration}m)",
-                "timestamp": now,
-            }
-        )
+        if hasattr(store, "deep_work_banks"):
+            bank = store.deep_work_banks.setdefault(user_id, {"balance": 10, "transactions": []})
+            bank["balance"] += 5
+            bank["transactions"].append(
+                {
+                    "transaction_id": f"tx_{uuid.uuid4().hex[:8]}",
+                    "session_id": session_id,
+                    "delta": 5,
+                    "reason": f"Focus session started ({duration}m)",
+                    "timestamp": now,
+                }
+            )
         return _json_resp(200, session)
 
     elif action == "stop":
         session_id = body.get("session_id")
-        matching = [
-            s
-            for s in store.sessions.values()
-            if s.get("user_id") == user_id and (s.get("session_id") == session_id or not session_id)
-        ]
-        if not matching:
+        target_session = None
+        if session_id and hasattr(store, "get_focus_session"):
+            try:
+                target_session = store.get_focus_session(user_id, session_id)
+            except StorageError as exc:
+                return _json_resp(503, {"error": "storage_error", "message": str(exc)})
+        elif hasattr(store, "sessions"):
+            matching = [
+                s
+                for s in store.sessions.values()
+                if s.get("user_id") == user_id and (s.get("session_id") == session_id or not session_id)
+            ]
+            if matching:
+                target_session = matching[-1]
+
+        if not target_session:
             return _json_resp(404, {"error": "session_not_found", "message": "No active session found for user"})
 
-        target_session = matching[-1]
         target_session["status"] = "completed"
         target_session["ended_at"] = now
+        try:
+            if hasattr(store, "save_focus_session"):
+                store.save_focus_session(target_session)
+            elif hasattr(store, "sessions"):
+                store.sessions[target_session["session_id"]] = target_session
+        except StorageError as exc:
+            return _json_resp(503, {"error": "storage_error", "message": str(exc)})
         return _json_resp(200, target_session)
 
     return _json_resp(400, {"error": "invalid_action"})
@@ -421,9 +827,10 @@ def handle_focus_signal(body: dict[str, Any], store: InMemoryDataStore = default
             undo_token = batch_res.get("undo_token") or f"undo_rtn_{uuid.uuid4().hex[:10]}"
             action_decision = "executed"
             store.undo_guardrail.record_execution(user_id, recommended_action)
+            act_id = f"act_{uuid.uuid4().hex[:8]}"
             store.audit_records.append(
                 {
-                    "action_id": f"act_{uuid.uuid4().hex[:8]}",
+                    "action_id": act_id,
                     "user_id": user_id,
                     "action_type": recommended_action,
                     "target_device_id": device_actions[0]["device"] if device_actions else None,
@@ -434,6 +841,18 @@ def handle_focus_signal(body: dict[str, Any], store: InMemoryDataStore = default
                     "timestamp": now,
                 }
             )
+            store.undo_records[undo_token] = {
+                "token": undo_token,
+                "user_id": user_id,
+                "action_id": act_id,
+                "action_type": recommended_action,
+                "target_device": device_actions[0]["device"] if device_actions else None,
+                "status": "PENDING",
+                "created_at": now,
+                "expires_at": now + 86400,
+                "lease_expires_at": 0.0,
+                "retry_count": 0,
+            }
         else:
             action_decision = "ask_user_confirmation"
             store.audit_records.append(
@@ -594,6 +1013,19 @@ def handle_focus_signal(body: dict[str, Any], store: InMemoryDataStore = default
                         "timestamp": now,
                     }
                 )
+                if undo_token:
+                    store.undo_records[undo_token] = {
+                        "token": undo_token,
+                        "user_id": user_id,
+                        "action_id": receipt.receipt_id,
+                        "action_type": recommended_action,
+                        "target_device": target_device,
+                        "status": "PENDING",
+                        "created_at": now,
+                        "expires_at": now + 86400,
+                        "lease_expires_at": 0.0,
+                        "retry_count": 0,
+                    }
             else:
                 err_msg = receipt.error_message or "Device execution failed"
                 if "Household mismatch" in err_msg:
@@ -733,30 +1165,121 @@ def handle_reset_guardrail(body: dict[str, Any], store: InMemoryDataStore = defa
     return _json_resp(200, {"reset": True, "user_id": user_id, "action_type": action_type})
 
 
-def handle_query_audit(user_id: str, limit: int = 20, store: InMemoryDataStore = default_store) -> dict[str, Any]:
-    records = [r for r in store.audit_records if r.get("user_id") == user_id]
-    records.sort(key=lambda r: r.get("timestamp", 0), reverse=True)
-    return _json_resp(200, {"user_id": user_id, "records": records[:limit]})
+def handle_query_audit(user_id: str, limit: int = 20, store: Any = default_store) -> dict[str, Any]:
+    try:
+        if hasattr(store, "get_audit_records"):
+            records = store.get_audit_records(user_id, limit=limit)
+        else:
+            records = [r for r in getattr(store, "audit_records", []) if r.get("user_id") == user_id]
+            records.sort(key=lambda r: r.get("timestamp", 0), reverse=True)
+            records = records[:limit]
+    except StorageError as exc:
+        return _json_resp(503, {"error": "storage_error", "message": str(exc)})
+    return _json_resp(200, {"user_id": user_id, "records": records})
 
 
-def handle_undo_action(body: dict[str, Any], store: InMemoryDataStore = default_store) -> dict[str, Any]:
+def handle_undo_action(body: dict[str, Any], store: Any = default_store) -> dict[str, Any]:
     undo_token = body.get("undo_token")
     user_id = body.get("user_id")
 
     if not undo_token or not user_id:
         return _json_resp(400, {"error": "invalid_parameters", "message": "undo_token and user_id required"})
 
-    if undo_token in store.undone_tokens:
+    now = time.time()
+
+    # 1. Ownership & Expiration Validation against durable undo records and audit records
+    undo_rec = store.get_undo_record(undo_token)
+    matching_record = None
+    if hasattr(store, "audit_records"):
+        for r in store.audit_records:
+            if r.get("undo_token") == undo_token:
+                matching_record = r
+                break
+
+    owner_user_id = (undo_rec.get("userId") or undo_rec.get("user_id") if undo_rec else None) or (matching_record.get("user_id") if matching_record else None)
+
+    if owner_user_id and owner_user_id != user_id:
+        _log("WARNING", "undo_ownership_mismatch", caller=user_id, owner=owner_user_id, token=undo_token)
+        return _json_resp(403, {"error": "unauthorized", "message": "Undo token belongs to another user"})
+
+    # Expiry validation
+    if matching_record:
+        if matching_record.get("expires_at") and now > matching_record["expires_at"]:
+            return _json_resp(410, {"error": "undo_token_expired", "message": "Undo token has expired", "undo_token": undo_token})
+        if matching_record.get("ttl_seconds") and (now - matching_record.get("timestamp", 0)) > matching_record["ttl_seconds"]:
+            return _json_resp(410, {"error": "undo_token_expired", "message": "Undo token has expired", "undo_token": undo_token})
+
+    if undo_rec:
+        if undo_rec.get("expires_at") and now > undo_rec["expires_at"]:
+            return _json_resp(410, {"error": "undo_token_expired", "message": "Undo token has expired", "undo_token": undo_token})
+
+    # 2. Replay Prevention & State Machine
+    if undo_rec and undo_rec.get("status") == "SUCCEEDED":
         return _json_resp(
             200,
-            {"success": True, "undo_token": undo_token, "message": "Action was already reversed (idempotent)"},
+            {"success": True, "undo_token": undo_token, "idempotent": True, "message": "Action was already reversed (idempotent)"},
+        )
+    if hasattr(store, "undone_tokens") and undo_token in store.undone_tokens:
+        return _json_resp(
+            200,
+            {"success": True, "undo_token": undo_token, "idempotent": True, "message": "Action was already reversed (idempotent)"},
         )
 
-    store.undone_tokens.add(undo_token)
+    # 3. Atomic lease acquisition with condition check and fencing token
+    lease_owner_id = str(uuid.uuid4())
+    try:
+        acquired, status_code, err_msg = store.acquire_undo_lease(
+            undo_token=undo_token,
+            user_id=user_id,
+            lease_owner_id=lease_owner_id,
+            lease_duration=30.0,
+        )
+    except StorageError as st_err:
+        return _json_resp(503, {"error": "storage_error", "message": str(st_err)})
 
-    # Reverse on simulated device adapter or Slack adapter
+    if not acquired:
+        if status_code == 200:
+            return _json_resp(200, {"success": True, "undo_token": undo_token, "idempotent": True, "message": err_msg or "Action was already reversed (idempotent)"})
+        if status_code == 409:
+            return _json_resp(409, {"error": "undo_in_progress", "message": err_msg or "Undo reversal currently in progress, please retry shortly"})
+        return _json_resp(status_code, {"error": "storage_error", "message": err_msg or "Failed to acquire undo lease"})
+
+    # 4. Reverse on certified device adapter or Slack adapter
     device_result = store.device_adapter.execute_undo(undo_token)
     slack_result = store.slack_adapter.execute_undo(undo_token)
+
+    device_ok = isinstance(device_result, dict) and device_result.get("success", False)
+    slack_ok = isinstance(slack_result, dict) and slack_result.get("success", False)
+
+    # Honest failure reporting: if token is unknown to devices, slack, and records
+    if not device_ok and not slack_ok and not matching_record and not undo_rec:
+        store.fail_undo(undo_token, user_id, lease_owner_id, error_reason="unknown_token")
+        return _json_resp(
+            404,
+            {
+                "success": False,
+                "error": "undo_failed",
+                "message": "Invalid or unknown undo token; no device or status was restored",
+                "undo_token": undo_token,
+            },
+        )
+
+    # If device explicitly failed due to offline state or network failure on a known action
+    if isinstance(device_result, dict) and device_result.get("error") == "device_offline":
+        store.fail_undo(undo_token, user_id, lease_owner_id, error_reason="device_offline")
+        return _json_resp(
+            502,
+            {
+                "success": False,
+                "error": "device_reversal_failed",
+                "retryable": True,
+                "message": "Device offline or communication failure; token not consumed",
+                "undo_token": undo_token,
+            },
+        )
+
+    # 5. State transition to SUCCEEDED with fencing token
+    store.complete_undo(undo_token, user_id, lease_owner_id)
 
     # Mark existing audit record undone
     action_type = "request_pause"
@@ -770,6 +1293,7 @@ def handle_undo_action(body: dict[str, Any], store: InMemoryDataStore = default_
     tripped = store.undo_guardrail.record_undo(user_id, action_type)
 
     # Record reversal entry in audit log
+    now = time.time()
     store.audit_records.append(
         {
             "action_id": f"undo_{uuid.uuid4().hex[:8]}",
@@ -778,9 +1302,12 @@ def handle_undo_action(body: dict[str, Any], store: InMemoryDataStore = default_
             "status": "undone",
             "reason": f"Action reversed by user via token {undo_token}",
             "undo_token": undo_token,
-            "timestamp": time.time(),
+            "timestamp": now,
         }
     )
+
+    _log("INFO", "undo_action_executed", user_id=user_id, undo_token=undo_token, device_ok=device_ok, slack_ok=slack_ok)
+
     return _json_resp(
         200,
         {
@@ -1428,16 +1955,22 @@ _DEFAULT_USER_PREFERENCES: dict[str, Any] = {
 
 
 def handle_get_preferences(
-    user_id: str, store: InMemoryDataStore = default_store
+    user_id: str, store: Any = default_store
 ) -> dict[str, Any]:
     """Retrieve non-sensitive user preferences."""
     if not user_id:
         return _json_resp(400, {"error": "invalid_parameters", "message": "user_id is required"})
 
-    if not hasattr(store, "whisper_preferences"):
-        store.whisper_preferences = {}
+    try:
+        if hasattr(store, "get_preferences"):
+            user_prefs = store.get_preferences(user_id)
+        elif hasattr(store, "whisper_preferences"):
+            user_prefs = store.whisper_preferences.get(user_id, {})
+        else:
+            user_prefs = {}
+    except StorageError as exc:
+        return _json_resp(503, {"error": "storage_error", "message": str(exc)})
 
-    user_prefs = store.whisper_preferences.get(user_id, {})
     merged = {**_DEFAULT_USER_PREFERENCES, **user_prefs, "user_id": user_id}
 
     # Security: ensure no sensitive keys are ever returned
@@ -1448,7 +1981,7 @@ def handle_get_preferences(
 
 
 def handle_update_preferences(
-    body: dict[str, Any], store: InMemoryDataStore = default_store
+    body: dict[str, Any], store: Any = default_store
 ) -> dict[str, Any]:
     """Update user preferences with allowlist validation."""
     user_id = body.get("user_id")
@@ -1476,22 +2009,33 @@ def handle_update_preferences(
     if "location_in_sos" in patch and patch["location_in_sos"] not in {"off", "ask_each_time", "approved_contacts_only"}:
         return _json_resp(400, {"error": "invalid_enum", "message": "location_in_sos must be off, ask_each_time, or approved_contacts_only"})
 
-    if not hasattr(store, "whisper_preferences"):
-        store.whisper_preferences = {}
+    if hasattr(store, "whisper_preferences"):
+        current = store.whisper_preferences.setdefault(user_id, {**_DEFAULT_USER_PREFERENCES, "user_id": user_id})
+        current.update(patch)
+    else:
+        current = {**_DEFAULT_USER_PREFERENCES, "user_id": user_id, **patch}
 
-    current = store.whisper_preferences.setdefault(user_id, {**_DEFAULT_USER_PREFERENCES, "user_id": user_id})
-    current.update(patch)
+    try:
+        if hasattr(store, "update_preferences"):
+            store.update_preferences(user_id, current)
+    except StorageError as exc:
+        return _json_resp(503, {"error": "storage_error", "message": str(exc)})
 
     now = time.time()
     audit_id = f"pref_{uuid.uuid4().hex[:8]}"
-    store.audit_records.append(
-        {
-            "action_id": audit_id,
-            "user_id": user_id,
-            "category": "preferences_updated",
-            "timestamp": now,
-        }
-    )
+    audit_entry = {
+        "action_id": audit_id,
+        "user_id": user_id,
+        "category": "preferences_updated",
+        "timestamp": now,
+    }
+    if hasattr(store, "record_audit"):
+        try:
+            store.record_audit(audit_entry)
+        except Exception:
+            pass
+    elif hasattr(store, "audit_records"):
+        store.audit_records.append(audit_entry)
 
     _log("INFO", "user_preferences_updated", user_id=user_id, updated_keys=list(patch.keys()))
 
@@ -1599,9 +2143,15 @@ def handle_update_routine(routine_id: str, body: dict[str, Any], store: InMemory
 def lambda_handler(
     event: dict[str, Any],
     _context: object = None,
-    store_override: InMemoryDataStore | None = None,
+    store_override: Any | None = None,
 ) -> dict[str, Any]:
-    store = store_override or default_store
+    try:
+        store = get_datastore(store_override)
+    except StorageUnavailableError as st_err:
+        return _json_resp(
+            503,
+            {"error": "storage_unavailable", "message": str(st_err)},
+        )
     path = event.get("path") or event.get("rawPath") or ""
     http_method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method") or "GET"
     query_params = event.get("queryStringParameters") or {}
@@ -1619,6 +2169,42 @@ def lambda_handler(
     # Handle CORS OPTIONS preflight
     if http_method == "OPTIONS":
         return _json_resp(200, {"ok": True})
+
+    # Public health check endpoint
+    if path in ("/health", "/api/v1/health") and http_method == "GET":
+        return _json_resp(200, {"status": "healthy", "service": "aura-control-plane", "timestamp": time.time()})
+
+    # Server-Side Authentication & Authorization Enforcement
+    if _auth and not _auth.is_public_route(http_method, path):
+        allow_bypass = bool(
+            store_override is not None
+            and not os.getenv("AURA_STRICT_AUTH", "").strip().lower() in ("true", "1", "yes")
+        )
+        auth_ctx = _auth.extract_and_validate_auth(event, allow_test_bypass=allow_bypass)
+        if not auth_ctx.is_authenticated:
+            return _json_resp(
+                401,
+                {
+                    "error": auth_ctx.error or "unauthorized",
+                    "message": auth_ctx.error_message or "Missing or invalid authentication token",
+                },
+            )
+
+        # Enforce user ownership against requested user_id if specified
+        requested_uid = query_params.get("user_id") or (body.get("user_id") if isinstance(body, dict) else None)
+        try:
+            verified_uid = _auth.enforce_user_authorization(auth_ctx, requested_uid)
+        except _auth.AuthError as auth_err:
+            return _json_resp(
+                auth_err.status_code,
+                {"error": auth_err.error, "message": auth_err.message},
+            )
+
+        # Ensure downstream handlers use the verified identity
+        if isinstance(body, dict) and "user_id" in body:
+            body["user_id"] = verified_uid
+        if "user_id" in query_params:
+            query_params["user_id"] = verified_uid
 
     # Routing
     if path == "/api/v1/consent/grants" and http_method == "GET":

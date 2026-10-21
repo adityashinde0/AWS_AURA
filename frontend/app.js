@@ -4,6 +4,397 @@
  */
 
 // Application State
+// ==========================================================================
+// Runtime Backend API Configuration & Integration Client
+// ==========================================================================
+
+const API_CONFIG = {
+  getBaseUrl() {
+    // 1. URL query parameters (?api=... or ?backend=...)
+    if (typeof window !== 'undefined' && window.location && window.location.search) {
+      const params = new URLSearchParams(window.location.search);
+      const queryApi = params.get('api') || params.get('backend');
+      if (queryApi && queryApi.trim()) {
+        return queryApi.trim().replace(/\/+$/, '');
+      }
+    }
+    // 2. Window runtime global
+    if (typeof window !== 'undefined' && window.AURA_API_ENDPOINT && typeof window.AURA_API_ENDPOINT === 'string') {
+      return window.AURA_API_ENDPOINT.trim().replace(/\/+$/, '');
+    }
+    // 3. LocalStorage persistence
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const stored = window.localStorage.getItem('aura_api_base_url');
+      if (stored && stored.trim()) {
+        return stored.trim().replace(/\/+$/, '');
+      }
+    }
+    // Default: empty string (Local Demo / Simulation Mode)
+    return '';
+  },
+
+  setBaseUrl(url) {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      if (url && url.trim()) {
+        window.localStorage.setItem('aura_api_base_url', url.trim().replace(/\/+$/, ''));
+      } else {
+        window.localStorage.removeItem('aura_api_base_url');
+      }
+    }
+  },
+
+  isConnected() {
+    return Boolean(this.getBaseUrl());
+  },
+
+  timeoutMs: 5000,
+};
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+const authSession = {
+  _token: null,
+  getToken() {
+    if (this._token) return this._token;
+    if (typeof window !== 'undefined' && window.__AURA_AUTH_TOKEN__) {
+      return window.__AURA_AUTH_TOKEN__;
+    }
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      return window.sessionStorage.getItem('aura_auth_token') || null;
+    }
+    return null;
+  },
+  setToken(token) {
+    this._token = token;
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      if (token) {
+        window.sessionStorage.setItem('aura_auth_token', token);
+      } else {
+        window.sessionStorage.removeItem('aura_auth_token');
+      }
+    }
+  },
+  clearToken() {
+    this.setToken(null);
+  },
+};
+
+const auraApiClient = {
+  authSession,
+
+  async _request(path, method = 'GET', body = null) {
+    const baseUrl = API_CONFIG.getBaseUrl();
+    if (!baseUrl) {
+      return { success: false, mode: 'demo', error: 'demo_mode', message: 'Running in Local Demo Mode' };
+    }
+
+    const url = `${baseUrl}${path}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.timeoutMs);
+
+    const options = {
+      method,
+      headers: {
+        'Accept': 'application/json',
+      },
+      signal: controller.signal,
+    };
+
+    const authToken = authSession.getToken();
+    if (authToken) {
+      options.headers['Authorization'] = `Bearer ${authToken}`;
+    }
+
+    if (body && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+      options.headers['Content-Type'] = 'application/json';
+      options.body = JSON.stringify(body);
+    }
+
+    try {
+      const response = await fetch(url, options);
+      clearTimeout(timeoutId);
+
+      const contentType = response.headers.get('content-type') || '';
+      let data = null;
+      if (contentType.includes('application/json')) {
+        data = await response.json();
+      } else {
+        const text = await response.text();
+        try {
+          data = JSON.parse(text);
+        } catch (_) {
+          data = { raw: text };
+        }
+      }
+
+      if (!response.ok) {
+        let errType = data?.error || 'http_error';
+        if (response.status === 401) errType = 'unauthorized';
+        else if (response.status === 403) errType = 'forbidden';
+        else if (response.status === 404) errType = 'not_found';
+        else if (response.status === 409) errType = 'conflict';
+        else if (response.status === 410) errType = 'expired';
+        else if (response.status === 429) errType = 'throttled';
+        else if (response.status >= 500) errType = 'server_error';
+
+        return {
+          success: false,
+          mode: 'connected',
+          status: response.status,
+          error: errType,
+          message: data?.message || `HTTP ${response.status}`,
+          data,
+        };
+      }
+
+      return {
+        success: true,
+        mode: 'connected',
+        status: response.status,
+        data,
+      };
+    } catch (err) {
+      clearTimeout(timeoutId);
+      const isAbort = err.name === 'AbortError';
+      return {
+        success: false,
+        mode: 'connected',
+        error: isAbort ? 'timeout' : 'network_error',
+        message: isAbort ? `Request timed out after ${API_CONFIG.timeoutMs}ms` : (err.message || 'Network request failed'),
+      };
+    }
+  },
+
+  postFocusSignal(payload) {
+    return this._request('/api/v1/focus/signal', 'POST', payload);
+  },
+
+  startSession(durationMinutes, sessionId) {
+    return this._request('/api/v1/focus/session', 'POST', {
+      user_id: state.userId,
+      action: 'start',
+      duration_minutes: durationMinutes,
+      session_id: sessionId,
+    });
+  },
+
+  stopSession(sessionId) {
+    return this._request('/api/v1/focus/session', 'POST', {
+      user_id: state.userId,
+      action: 'stop',
+      session_id: sessionId,
+    });
+  },
+
+  getGrants() {
+    return this._request(`/api/v1/consent/grants?user_id=${encodeURIComponent(state.userId)}`, 'GET');
+  },
+
+  createGrant(grant) {
+    return this._request('/api/v1/consent/grants', 'POST', {
+      user_id: state.userId,
+      action_type: grant.action_type,
+      scope: grant.scope,
+      target_allowlist: grant.target_allowlist || [],
+      ttl_seconds: grant.ttl_seconds || 86400,
+    });
+  },
+
+  revokeGrant(grantId) {
+    return this._request(`/api/v1/consent/grants/${encodeURIComponent(grantId)}?user_id=${encodeURIComponent(state.userId)}`, 'DELETE');
+  },
+
+  getAuditRecords(limit = 20) {
+    return this._request(`/api/v1/audit/actions?user_id=${encodeURIComponent(state.userId)}&limit=${limit}`, 'GET');
+  },
+
+  undoAction(undoToken) {
+    return this._request('/api/v1/actions/undo', 'POST', {
+      user_id: state.userId,
+      undo_token: undoToken,
+    });
+  },
+};
+
+function ensureBackendStyles() {
+  if (document.getElementById('aura-backend-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'aura-backend-styles';
+  style.textContent = `
+    .backend-mode-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      padding: 5px 12px;
+      border-radius: 9999px;
+      cursor: pointer;
+      user-select: none;
+      transition: all 0.2s ease;
+      border: 1px solid var(--border-color, rgba(255,255,255,0.14));
+      background: var(--card-bg, rgba(255,255,255,0.06));
+      color: var(--text-color, inherit);
+      margin-right: 8px;
+    }
+    .backend-mode-pill:hover {
+      border-color: rgba(245, 158, 11, 0.5);
+      background: rgba(245, 158, 11, 0.1);
+    }
+    .backend-mode-pill.connected {
+      border-color: rgba(16, 185, 129, 0.4);
+      background: rgba(16, 185, 129, 0.08);
+      color: #10B981;
+    }
+    .backend-mode-pill .mode-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+    .backend-mode-pill .mode-dot.online {
+      background: #10B981;
+      box-shadow: 0 0 8px #10B981;
+    }
+    .backend-mode-pill .mode-dot.demo {
+      background: #F59E0B;
+      box-shadow: 0 0 8px #F59E0B;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+function renderBackendIndicator() {
+  ensureBackendStyles();
+  let indicator = document.getElementById('aura-backend-indicator');
+  const headerRight = document.querySelector('.header-right');
+  if (!headerRight) return;
+
+  if (!indicator) {
+    indicator = document.createElement('div');
+    indicator.id = 'aura-backend-indicator';
+    indicator.className = 'backend-mode-pill';
+    indicator.setAttribute('role', 'button');
+    indicator.setAttribute('tabindex', '0');
+    headerRight.insertBefore(indicator, headerRight.firstChild);
+
+    indicator.addEventListener('click', promptBackendEndpoint);
+    indicator.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        promptBackendEndpoint();
+      }
+    });
+  }
+
+  const isConnected = API_CONFIG.isConnected();
+  const baseUrl = API_CONFIG.getBaseUrl();
+  if (isConnected) {
+    let host = baseUrl;
+    try {
+      const u = new URL(baseUrl);
+      host = u.host;
+    } catch (_) {}
+    indicator.className = 'backend-mode-pill connected';
+    indicator.innerHTML = `
+      <span class="mode-dot online" aria-hidden="true"></span>
+      <span class="mode-label">Backend: <strong>${escapeHtml(host)}</strong></span>
+    `;
+    indicator.title = `Connected to ${baseUrl}. Click to change or switch to Demo Mode.`;
+  } else {
+    indicator.className = 'backend-mode-pill demo';
+    indicator.innerHTML = `
+      <span class="mode-dot demo" aria-hidden="true"></span>
+      <span class="mode-label">Demo Mode (Simulated)</span>
+    `;
+    indicator.title = 'Running in Local Demo / Simulation Mode. Click to configure live backend API URL.';
+  }
+}
+
+function promptBackendEndpoint() {
+  const current = API_CONFIG.getBaseUrl();
+  const input = prompt(
+    'Configure AURA Backend API Endpoint:\\n\\nEnter the base URL of your API (e.g., https://xyz.execute-api.us-east-1.amazonaws.com or http://localhost:8000).\\nLeave blank to run in Local Demo / Simulation Mode.',
+    current
+  );
+  if (input !== null) {
+    const trimmed = input.trim();
+    API_CONFIG.setBaseUrl(trimmed);
+    renderBackendIndicator();
+    if (trimmed) {
+      showToast(`🔗 Backend set to: ${trimmed}. Testing connection...`);
+      syncWithBackend();
+    } else {
+      showToast('ℹ️ Switched to Local Demo / Simulation Mode.');
+    }
+  }
+}
+
+async function syncWithBackend() {
+  if (!API_CONFIG.isConnected()) return;
+  try {
+    const [grantsResp, auditResp] = await Promise.all([
+      auraApiClient.getGrants(),
+      auraApiClient.getAuditRecords(20),
+    ]);
+
+    if (grantsResp.success && Array.isArray(grantsResp.data?.grants) && grantsResp.data.grants.length > 0) {
+      state.grants = grantsResp.data.grants;
+      renderGrants();
+    }
+
+    if (auditResp.success && Array.isArray(auditResp.data?.records) && auditResp.data.records.length > 0) {
+      const mapped = auditResp.data.records.map((r) => ({
+        action_id: r.action_id,
+        timestamp: r.timestamp < 1e11 ? r.timestamp * 1000 : r.timestamp,
+        action_type: r.action_type,
+        target: r.target_device_id || 'Living Room Fire TV',
+        status: r.status,
+        reason: r.reason,
+        undo_token: r.undo_token || null,
+      }));
+      state.audit = mapped;
+      renderAuditTimeline();
+    }
+
+    if (grantsResp.success || auditResp.success) {
+      showToast('✅ Synchronized state with live backend.');
+    } else {
+      showToast(`⚠️ Backend unreachable (${grantsResp.message || auditResp.message}). Operating in demo fallback.`, false);
+    }
+  } catch (err) {
+    showToast(`⚠️ Backend sync error: ${err.message}. Operating in demo fallback.`, false);
+  }
+}
+
+function updateTvUI(status) {
+  const isPaused = status === 'paused';
+  if (DOM.firetvBadge) {
+    DOM.firetvBadge.textContent = isPaused ? 'Paused' : 'Playing';
+    DOM.firetvBadge.className = isPaused ? 'badge badge-status' : 'badge badge-success';
+  }
+  if (DOM.actionStatusBadge) {
+    DOM.actionStatusBadge.textContent = isPaused ? 'Executed (Paused)' : 'Restored (Playing)';
+    DOM.actionStatusBadge.className = isPaused ? 'badge badge-status' : 'badge badge-success';
+  }
+  const btnHomePauseTv = document.getElementById('btn-home-pause-tv');
+  if (btnHomePauseTv) {
+    btnHomePauseTv.textContent = isPaused ? '▶️ Resume Fire TV' : '📺 Pause Fire TV';
+  }
+  const tileTvInd = document.getElementById('tile-tv-indicator');
+  if (tileTvInd) {
+    tileTvInd.style.background = isPaused ? '#f59e0b' : '#10B981';
+  }
+}
+
 const state = {
   userId: 'usr_marcus',
   activeMeetingId: 'q4_arch',
@@ -812,7 +1203,84 @@ function completeSession() {
 }
 
 // Distraction Self-Report Trigger
-function triggerDistraction() {
+async function triggerDistraction() {
+  if (API_CONFIG.isConnected()) {
+    showToast('📡 Transmitting distraction signal to backend policy engine...');
+    const resp = await auraApiClient.postFocusSignal({
+      user_id: state.userId,
+      session_id: state.session.sessionId,
+      purpose: 'focus_guardian',
+      explicit_signal: 'self_report_distracted',
+      consented_signal_score: 0.80,
+      user_intent: 'self_report_distracted',
+      connected_devices: ['dev_firetv_living_room'],
+    });
+
+    if (!resp.success) {
+      const errDetail = resp.message || resp.error || `HTTP ${resp.status || 'unknown'}`;
+      showToast(`❌ [Backend Error] Distraction signal failed (${errDetail}). No local actions executed.`, false);
+      addAuditRecord(
+        'focus_signal_failed',
+        'Backend Policy Engine',
+        'failed',
+        `Backend request failed (${errDetail}). Device execution halted.`
+      );
+      return;
+    }
+
+    state.session.isDistracted = true;
+    state.session.score = 0.80;
+    const reason = 'You explicitly reported being distracted. Proposing to pause allowed media devices.';
+    updateScoreUI(state.session.score, reason);
+
+    // Deep work bank penalty: -1 point
+    state.bank.balance = Math.max(0, state.bank.balance - 1);
+    DOM.bankBalance.textContent = state.bank.balance;
+    if (DOM.modalBankBalance) DOM.modalBankBalance.textContent = state.bank.balance;
+
+    const data = resp.data || {};
+    const decision = data.decision;
+    const undoToken = data.undo_token;
+
+    if (decision === 'executed' && undoToken) {
+      state.activeUndoToken = undoToken;
+      enableUndoUI(300);
+      state.devices.firetv.state = 'paused';
+      updateTvUI('paused');
+      addRecentActivity('TV paused (Backend Policy)', 'Just now', true);
+      addAuditRecord(
+        'request_pause',
+        'Living Room Fire TV',
+        'executed',
+        `[Backend Verified] MediaSession pause executed under consent grant. Idempotency token: ${undoToken}`,
+        undoToken
+      );
+      showToast(`✅ [Backend Verified] Fire TV paused. Undo token: ${undoToken} (5m window)`, true);
+    } else if (decision === 'suggested_only' || decision === 'ask_user_confirmation') {
+      showToast('ℹ️ [Backend Policy] Action requires user confirmation. Device state unchanged.');
+      addAuditRecord(
+        'request_pause',
+        'Living Room Fire TV',
+        'suggested_only',
+        data.proposal?.reason || 'Policy requires explicit confirmation',
+        null
+      );
+    } else if (decision && decision.startsWith('blocked')) {
+      showToast(`🛑 [Policy Blocked] Action blocked: ${data.blocked_reason || decision}`);
+      addAuditRecord(
+        'request_pause',
+        'Living Room Fire TV',
+        'blocked',
+        `Policy blocked action: ${data.blocked_reason || decision}`,
+        null
+      );
+    } else {
+      showToast(`⚠️ [Backend Policy] Unexpected response decision: ${decision || 'none'}. Device state unchanged.`);
+    }
+    return;
+  }
+
+  // Demo / Simulation Mode
   state.session.isDistracted = true;
   state.session.score = 0.80;
   const reason = 'You explicitly reported being distracted. Proposing to pause allowed media devices.';
@@ -823,10 +1291,8 @@ function triggerDistraction() {
   DOM.bankBalance.textContent = state.bank.balance;
   if (DOM.modalBankBalance) DOM.modalBankBalance.textContent = state.bank.balance;
 
-  // Execute pause on Fire TV
   executeDevicePause();
-
-  showToast('🚨 Distraction recorded. Fire TV playback paused. Undo available for 5 minutes.', true);
+  showToast('🚨 [Demo Mode] Distraction recorded. Fire TV playback paused locally. Undo available for 5 minutes.', true);
 }
 
 function updateScoreUI(score, reason) {
@@ -852,31 +1318,20 @@ function enableUndoUI(seconds = 30) {
 
 // Device Action Execution & Undo
 function executeDevicePause() {
+  if (API_CONFIG.isConnected()) {
+    showToast('⚠️ [Error] Direct device pause is only permitted in Demo/Offline mode.');
+    return;
+  }
   const undoToken = 'undo_pause_' + Math.random().toString(36).substring(2, 9);
   state.activeUndoToken = undoToken;
   enableUndoUI(300);
 
   // Update Fire TV state
   state.devices.firetv.state = 'paused';
-  if (DOM.firetvBadge) {
-    DOM.firetvBadge.textContent = 'Paused';
-    DOM.firetvBadge.className = 'badge badge-status';
-  }
-
-  if (DOM.actionStatusBadge) {
-    DOM.actionStatusBadge.textContent = 'Executed (Paused)';
-    DOM.actionStatusBadge.className = 'badge badge-status';
-  }
+  updateTvUI('paused');
   if (DOM.btnImmediateUndo) DOM.btnImmediateUndo.disabled = false;
-
   const btnHomeUndo = document.getElementById('btn-home-undo');
   if (btnHomeUndo) btnHomeUndo.disabled = false;
-
-  const btnHomePauseTv = document.getElementById('btn-home-pause-tv');
-  if (btnHomePauseTv) btnHomePauseTv.textContent = '▶️ Resume Fire TV';
-
-  const tileTvInd = document.getElementById('tile-tv-indicator');
-  if (tileTvInd) tileTvInd.style.background = '#f59e0b';
 
   addRecentActivity('TV paused (MediaSession)', 'Just now', true);
 
@@ -884,57 +1339,88 @@ function executeDevicePause() {
     'request_pause',
     'Living Room Fire TV',
     'executed',
-    'MediaSession transport pause command executed under session grant',
+    '[Demo Mode] MediaSession transport pause simulated under session grant',
     undoToken
   );
 }
 
-function executeUndo() {
+async function executeUndo() {
   if (!state.activeUndoToken) return;
+  const tokenToUndo = state.activeUndoToken;
+
+  if (API_CONFIG.isConnected()) {
+    showToast('⏳ [Backend] Validating and executing undo reversal...');
+    const resp = await auraApiClient.undoAction(tokenToUndo);
+
+    if (resp.success && (resp.data?.success || resp.data?.undone)) {
+      if (state.undoTimeout) clearTimeout(state.undoTimeout);
+      state.devices.firetv.state = 'playing';
+      updateTvUI('playing');
+      if (DOM.btnImmediateUndo) DOM.btnImmediateUndo.disabled = true;
+      const btnHomeUndo = document.getElementById('btn-home-undo');
+      if (btnHomeUndo) btnHomeUndo.disabled = true;
+
+      addRecentActivity('TV playback restored (Undo)', 'Just now', true);
+      const record = state.audit.find((r) => r.undo_token === tokenToUndo);
+      if (record) {
+        record.status = 'undone';
+        record.reason += ' (Reversed on server)';
+      }
+
+      addAuditRecord(
+        'undo_reversal',
+        'Living Room Fire TV',
+        'undone',
+        `[Backend Verified] Action reversed: Fire TV resumed playback via token ${tokenToUndo}`,
+        null
+      );
+
+      state.activeUndoToken = null;
+      renderAuditTimeline();
+      showToast('↩️ [Backend Verified] Action reversed! Living Room Fire TV resumed playback.');
+      return;
+    } else {
+      const errorMsg = resp.message || resp.data?.message || 'Server rejected undo';
+      showToast(`❌ [Undo Failed] ${errorMsg}. Device state was not modified.`, false);
+      addAuditRecord(
+        'undo_failed',
+        'Living Room Fire TV',
+        'failed',
+        `Undo token ${tokenToUndo} failed on backend: ${errorMsg}`,
+        null
+      );
+      renderAuditTimeline();
+      return;
+    }
+  }
+
+  // Demo / Simulation Mode
   if (state.undoTimeout) clearTimeout(state.undoTimeout);
-
-  // Restore Fire TV playback
   state.devices.firetv.state = 'playing';
-  if (DOM.firetvBadge) {
-    DOM.firetvBadge.textContent = 'Playing';
-    DOM.firetvBadge.className = 'badge badge-success';
-  }
-
-  if (DOM.actionStatusBadge) {
-    DOM.actionStatusBadge.textContent = 'Restored (Playing)';
-    DOM.actionStatusBadge.className = 'badge badge-success';
-  }
+  updateTvUI('playing');
   if (DOM.btnImmediateUndo) DOM.btnImmediateUndo.disabled = true;
-
   const btnHomeUndo = document.getElementById('btn-home-undo');
   if (btnHomeUndo) btnHomeUndo.disabled = true;
 
-  const btnHomePauseTv = document.getElementById('btn-home-pause-tv');
-  if (btnHomePauseTv) btnHomePauseTv.textContent = '📺 Pause Fire TV';
-
-  const tileTvInd = document.getElementById('tile-tv-indicator');
-  if (tileTvInd) tileTvInd.style.background = '#10B981';
-
   addRecentActivity('TV playback restored (Undo)', 'Just now', true);
 
-  // Mark audit undone
-  const record = state.audit.find((r) => r.undo_token === state.activeUndoToken);
+  const record = state.audit.find((r) => r.undo_token === tokenToUndo);
   if (record) {
     record.status = 'undone';
-    record.reason += ' (Reversed by user)';
+    record.reason += ' (Reversed locally)';
   }
 
   addAuditRecord(
     'undo_reversal',
     'Living Room Fire TV',
     'undone',
-    `Action reversed: Fire TV resumed playback via token ${state.activeUndoToken}`,
+    `[Demo Mode] Simulated action reversed: Fire TV resumed playback via token ${tokenToUndo}`,
     null
   );
 
   state.activeUndoToken = null;
   renderAuditTimeline();
-  showToast('↩️ Action reversed! Living Room Fire TV resumed playback.');
+  showToast('↩️ [Demo Mode] Action reversed! Living Room Fire TV playback resumed.');
 }
 
 // Toast Notifications
@@ -984,15 +1470,32 @@ function renderGrants() {
 
   // Attach revoke handlers
   document.querySelectorAll('.btn-revoke').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       const gid = e.target.getAttribute('data-grant-id');
       const g = state.grants.find((x) => x.grant_id === gid);
-      if (g) {
-        g.active = false;
-        renderGrants();
-        showToast(`Revoked grant ${gid} in <60 seconds.`);
-        addAuditRecord('grant_revoked', gid, 'executed', `Consent grant revoked by user`);
+      if (!g) return;
+
+      if (API_CONFIG.isConnected()) {
+        showToast(`⏳ [Backend] Revoking grant ${gid}...`);
+        const resp = await auraApiClient.revokeGrant(gid);
+        if (resp.success) {
+          g.active = false;
+          renderGrants();
+          showToast(`✅ [Backend Verified] Revoked grant ${gid}.`);
+          addAuditRecord('grant_revoked', gid, 'executed', `[Backend Verified] Consent grant revoked on server`);
+          return;
+        } else {
+          const errDetail = resp.message || resp.error || `HTTP ${resp.status || 'unknown'}`;
+          showToast(`❌ [Backend Error] Failed to revoke grant ${gid}: ${errDetail}. Grant remains active.`, false);
+          addAuditRecord('grant_revoke_failed', gid, 'failed', `Backend rejected grant revocation (${errDetail}). Grant remains active.`);
+          return;
+        }
       }
+
+      g.active = false;
+      renderGrants();
+      showToast(`[Demo Mode] Revoked grant ${gid} in <60 seconds.`);
+      addAuditRecord('grant_revoked', gid, 'executed', `[Demo Mode] Consent grant revoked by user`);
     });
   });
 }
@@ -1256,20 +1759,53 @@ function setupEventListeners() {
   }
 
   // Focus Toggle
-  DOM.btnToggleFocus.addEventListener('click', () => {
+  DOM.btnToggleFocus.addEventListener('click', async () => {
     if (state.session.active) {
+      if (API_CONFIG.isConnected()) {
+        const resp = await auraApiClient.stopSession(state.session.sessionId);
+        if (!resp.success) {
+          const errDetail = resp.message || resp.error || `HTTP ${resp.status || 'unknown'}`;
+          showToast(`❌ [Backend Error] Failed to stop session: ${errDetail}.`, false);
+          return;
+        }
+      }
       completeSession();
     } else {
-      state.session.active = true;
-      state.session.isDistracted = false;
-      state.session.remainingSeconds = state.session.durationMinutes * 60;
-      DOM.focusStatusText.textContent = 'Session Active';
-      DOM.btnToggleFocus.textContent = 'Stop Focus Session';
-      DOM.btnToggleFocus.className = 'btn btn-primary';
-      updateScoreUI(0.0, 'Focus session running uninterrupted. Score decays automatically over time.');
-      startTimer();
-      showToast(`Started new ${state.session.durationMinutes}-minute focus session.`);
-      addAuditRecord('focus_started', 'Local Companion', 'executed', `Started ${state.session.durationMinutes}m focus session`);
+      if (API_CONFIG.isConnected()) {
+        const targetSessionId = 'sess_marcus_' + Math.random().toString(36).substring(2, 9);
+        showToast('📡 [Backend] Synchronizing focus session start...');
+        const resp = await auraApiClient.startSession(state.session.durationMinutes, targetSessionId);
+        if (!resp.success) {
+          const errDetail = resp.message || resp.error || `HTTP ${resp.status || 'unknown'}`;
+          showToast(`❌ [Backend Error] Failed to start focus session: ${errDetail}. Session not started.`, false);
+          addAuditRecord('focus_start_failed', 'Cloud Intake', 'failed', `Backend rejected focus session start (${errDetail})`);
+          return;
+        }
+        state.session.active = true;
+        state.session.isDistracted = false;
+        state.session.remainingSeconds = state.session.durationMinutes * 60;
+        state.session.sessionId = targetSessionId;
+        DOM.focusStatusText.textContent = 'Session Active';
+        DOM.btnToggleFocus.textContent = 'Stop Focus Session';
+        DOM.btnToggleFocus.className = 'btn btn-primary';
+        updateScoreUI(0.0, 'Focus session running uninterrupted. Score decays automatically over time.');
+        startTimer();
+        showToast(`✅ [Backend Verified] Started ${state.session.durationMinutes}m session on cloud intake.`);
+        addAuditRecord('focus_started', 'Local Companion', 'executed', `Started ${state.session.durationMinutes}m focus session`);
+      } else {
+        // Demo Mode
+        state.session.active = true;
+        state.session.isDistracted = false;
+        state.session.remainingSeconds = state.session.durationMinutes * 60;
+        state.session.sessionId = 'sess_marcus_' + Math.random().toString(36).substring(2, 9);
+        DOM.focusStatusText.textContent = 'Session Active';
+        DOM.btnToggleFocus.textContent = 'Stop Focus Session';
+        DOM.btnToggleFocus.className = 'btn btn-primary';
+        updateScoreUI(0.0, 'Focus session running uninterrupted. Score decays automatically over time.');
+        startTimer();
+        showToast(`[Demo Mode] Started new ${state.session.durationMinutes}-minute focus session.`);
+        addAuditRecord('focus_started', 'Local Companion', 'executed', `Started ${state.session.durationMinutes}m focus session`);
+      }
     }
   });
 
@@ -1441,9 +1977,14 @@ function setupEventListeners() {
 
   // Audit Filter & Refresh
   DOM.auditFilter.addEventListener('change', renderAuditTimeline);
-  DOM.btnRefreshAudit.addEventListener('click', () => {
-    renderAuditTimeline();
-    showToast('Audit trail refreshed.');
+  DOM.btnRefreshAudit.addEventListener('click', async () => {
+    if (API_CONFIG.isConnected()) {
+      showToast('📡 Refreshing audit trail from backend...');
+      await syncWithBackend();
+    } else {
+      renderAuditTimeline();
+      showToast('Audit trail refreshed (Demo Mode).');
+    }
   });
 }
 
@@ -2063,6 +2604,7 @@ function initApp() {
   setupPhase5EventListeners();
   setupPhase6Slack();
   setupHomeDashboard();
+  renderBackendIndicator();
   renderMeeting(state.activeMeetingId);
   renderGrants();
   renderLearnedRoutines();
@@ -2072,6 +2614,11 @@ function initApp() {
   startTimer();
   updateScoreUI(0.0, 'Focus session running uninterrupted. Score decays automatically over time.');
   startT5Countdown();
+
+  // If connected, sync initial state from backend
+  if (API_CONFIG.isConnected()) {
+    syncWithBackend();
+  }
 }
 
 // Start on DOM Ready

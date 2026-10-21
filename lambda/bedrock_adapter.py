@@ -63,7 +63,7 @@ def _log(level: str, event: str, **fields: Any) -> None:
 # ---------------------------------------------------------------------------
 
 DEFAULT_MODEL_ID = os.getenv(
-    "BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0"
+    "BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"
 )
 DEFAULT_REGION = os.getenv("BEDROCK_REGION", "us-east-1")
 
@@ -125,6 +125,7 @@ class BedrockAdapter:
         region: str | None = None,
         mock_mode: bool | None = None,
         boto3_client: Any | None = None,
+        raise_on_error: bool = False,
     ) -> None:
         self.model_id = model_id or DEFAULT_MODEL_ID
         self.region = region or DEFAULT_REGION
@@ -134,6 +135,7 @@ class BedrockAdapter:
             else os.getenv("BEDROCK_MOCK", "false").lower() in ("true", "1", "yes")
         )
         self._client = boto3_client  # injected in tests; lazily created in production
+        self.raise_on_error = raise_on_error
 
     # ------------------------------------------------------------------
     # Public interface
@@ -167,6 +169,10 @@ class BedrockAdapter:
 
         # 3. Dispatch to mock or live path
         if self.mock_mode:
+            if os.getenv("BEDROCK_SIMULATE_ERROR"):
+                if self.raise_on_error:
+                    raise RuntimeError(os.getenv("BEDROCK_SIMULATE_ERROR"))
+                return safe_fallback(request, fallback_reason="not_implemented")
             _log(
                 "INFO",
                 "bedrock_adapter_mock_mode",
@@ -188,6 +194,8 @@ class BedrockAdapter:
                 session_id=request.session_id,
                 error=exc_name,
             )
+            if self.raise_on_error:
+                raise
             # Distinguish throttling vs other errors for observability
             fallback_reason = (
                 "validation_error" if "Throttling" in exc_name else "not_implemented"
