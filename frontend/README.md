@@ -9,3 +9,13 @@ Implement a mobile-first control plane with these non-negotiable surfaces:
 - **Audit:** immutable action timeline with actor, policy, reason, result, and undo outcome; never display raw private transcripts by default.
 
 Accessibility: screen-reader labels, visible focus state, high contrast, localized time zones, keyboard navigation, and no color-only status. Never render an employee leaderboard or manager view of a personal focus score.
+
+---
+
+## 🌐 Live Production Deployment
+
+* **Landing Showcase:** [Project AURA — Proactive Memory That Fights For Your Focus](https://awsaura-frontend.vercel.app/)
+* **Multi-Device Hardware Simulator:** [Live Simulator & Test Cases](https://awsaura-frontend.vercel.app/simulator)
+* **AURA Orbit Hardware Explorer:** [Orbit 360° Experience](https://awsaura-frontend.vercel.app/orbit)
+* **Web Control Plane:** [Executive Focus Control Plane](https://awsaura-frontend.vercel.app/control-plane)
+

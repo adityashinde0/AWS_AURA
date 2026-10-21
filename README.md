@@ -7,6 +7,7 @@
 [![AWS CDK v2](https://img.shields.io/badge/AWS_CDK-v2_TypeScript-FF9900?logo=amazon-aws&logoColor=white)](infra/)
 [![AWS Well-Architected](https://img.shields.io/badge/AWS-Well--Architected-232F3E?logo=amazon-aws&logoColor=white)](#-aws-well-architected-framework-alignment)
 [![IBM Watsonx](https://img.shields.io/badge/IBM-Watsonx_Granite_3.0-0F62FE?logo=ibm&logoColor=white)](https://www.ibm.com/watsonx)
+[![Live Demo](https://img.shields.io/badge/Vercel-Live_Deployment-000000?logo=vercel&logoColor=white)](https://awsaura-frontend.vercel.app/)
 [![Enterprise Modernization](https://img.shields.io/badge/Enterprise-Architecture_Modernization-0F62FE?logo=ibm&logoColor=white)](docs/MODERNIZATION_REPORT.md)
 [![Apple Watch](https://img.shields.io/badge/Apple_Watch-watchOS_10+_HealthKit-000000?logo=apple&logoColor=white)](apple/)
 [![Nordic nRF5340](https://img.shields.io/badge/Nordic-nRF5340_BLE_5.3-00A9CE?logo=nordicsemiconductor&logoColor=white)](firmware/)
@@ -24,12 +25,16 @@
 
 <br/>
 
+> 🚀 **Live Production Deployment:**  
+> [**Project AURA — Proactive Memory That Fights For Your Focus**](https://awsaura-frontend.vercel.app/)  
+> *(Interactive Landing Showcase • Orbit 360° • Live Watch Simulator • Web Control Plane)*  
+>  
 > 🎬 **Official Hardware & System Teaser:**  
 > [**Watch the Aura Orbit Edition Teaser Video on YouTube**](https://youtu.be/TGYBgcJrPzw)
 
 <br/>
 
-[🎬 Official Teaser](https://youtu.be/TGYBgcJrPzw) • [🌐 Live Web Simulator](#-live-web-control-plane--hardware-simulator) • [☁️ AWS Cloud (11 Services)](#-aws-cloud-architecture-11-enterprise-services) • [⚡ Dual-LLM Resilience (AWS + IBM)](#-hybrid-enterprise-ai-aws-bedrock--ibm-watsonx) • [🏗️ Architecture Modernization](#-enterprise-architecture-modernization--reliability-hardening) • [⌚ Multi-Device Ecosystem](#-multi-device-hardware--software-ecosystem) • [🏠 Ambient Smart Home](#-ambient-smart-home--physical-living-defense) • [📐 System Architecture](#-end-to-end-system-architecture) • [🛡️ Security & Zero-Surveillance](#-security-safety-guardian--zero-surveillance-guarantees) • [📚 Docs Hub](#-documentation-hub--system-specifications)
+[🚀 Live Web App](https://awsaura-frontend.vercel.app/) • [🎬 Official Teaser](https://youtu.be/TGYBgcJrPzw) • [🌐 Live Web Simulator](https://awsaura-frontend.vercel.app/simulator) • [☁️ AWS Cloud (11 Services)](#-aws-cloud-architecture-11-enterprise-services) • [⚡ Dual-LLM Resilience (AWS + IBM)](#-hybrid-enterprise-ai-aws-bedrock--ibm-watsonx) • [🏗️ Architecture Modernization](#-enterprise-architecture-modernization--reliability-hardening) • [⌚ Multi-Device Ecosystem](#-multi-device-hardware--software-ecosystem) • [🏠 Ambient Smart Home](#-ambient-smart-home--physical-living-defense) • [📐 System Architecture](#-end-to-end-system-architecture) • [🛡️ Security & Zero-Surveillance](#-security-safety-guardian--zero-surveillance-guarantees) • [📚 Docs Hub](#-documentation-hub--system-specifications)
 
 </div>
 
@@ -385,6 +390,14 @@ A personal safety monitor watches for acute biometric distress spikes or manual 
 
 ## 💻 Live Web Control Plane & Hardware Simulator
 
+> 🌐 **Live Cloud Deployment (Vercel):**  
+> Access the live production web suite at [**Project AURA — Proactive Memory That Fights For Your Focus**](https://awsaura-frontend.vercel.app/)
+> 
+> * 🏠 **Landing Showcase:** [awsaura-frontend.vercel.app](https://awsaura-frontend.vercel.app/)
+> * ⌚ **Live Watch Simulator & Testbed:** [awsaura-frontend.vercel.app/simulator](https://awsaura-frontend.vercel.app/simulator)
+> * 🪐 **Aura Orbit 360° Hardware Experience:** [awsaura-frontend.vercel.app/orbit](https://awsaura-frontend.vercel.app/orbit)
+> * 🎛️ **Executive Web Control Plane:** [awsaura-frontend.vercel.app/control-plane](https://awsaura-frontend.vercel.app/control-plane)
+
 Project AURA includes a zero-dependency, high-fidelity web suite in [`frontend/`](frontend/):
 
 * **Landing Showcase ([`frontend/index.html`](frontend/index.html)):** Interactive architectural breakdowns, hardware specifications, and live feature exploration.
@@ -502,8 +515,10 @@ npx cdk deploy
 ```
 
 ### 2. Web Control Plane & Simulator
+* **Live Production Web Suite:** [**Project AURA — Proactive Memory That Fights For Your Focus**](https://awsaura-frontend.vercel.app/)
+
 ```bash
-# From project root
+# Or run locally from project root
 npx serve frontend -p 3000
 # Visit http://localhost:3000
 ```
@@ -542,6 +557,7 @@ All comprehensive technical specifications, blueprints, runbooks, and reviews ar
 | **Product Requirements (PRD)** | Core product thesis, competitive baseline (Plaud, Limitless, Omi), user flows, and privacy boundaries | [`docs/PRD.md`](docs/PRD.md) |
 | **Architecture Modernization Report** | Serverless modernization report, Lambda refactoring details, and contract test verifications | [`docs/MODERNIZATION_REPORT.md`](docs/MODERNIZATION_REPORT.md) |
 | **Hardware Engineering Docs** | 1,000+ line engineering specification: BOM, exploded assembly, PMIC nPM1300 power budget, Zephyr drivers | [`docs/hardware/AURA_ORBIT_HARDWARE_DOCS.md`](docs/hardware/AURA_ORBIT_HARDWARE_DOCS.md) |
+| **Live Web Platform** | **Production Vercel deployment: Landing Showcase, Orbit 360°, Multi-Device Simulator & Control Plane** | [**awsaura-frontend.vercel.app**](https://awsaura-frontend.vercel.app/) |
 | **Official Teaser Video** | **Aura Orbit Edition official hardware & concept teaser video** | [**Watch on YouTube**](https://youtu.be/TGYBgcJrPzw) |
 | **Hardware Dossier (PDF)** | **Official 6.35 MB production engineering reference publication & industrial design dossier** | [`docs/hardware/AURA_ORBIT_HARDWARE_SPECIFICATION.pdf`](docs/hardware/AURA_ORBIT_HARDWARE_SPECIFICATION.pdf) |
 | **Wearable Concept Design** | Original exploratory industrial design rationale and calm wearable philosophy | [`docs/hardware/aura_wearable_hardware_design.md`](docs/hardware/aura_wearable_hardware_design.md) |

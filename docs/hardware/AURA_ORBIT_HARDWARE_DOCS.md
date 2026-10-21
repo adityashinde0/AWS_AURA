@@ -1001,8 +1001,9 @@ AURA Orbit is an original, privacy-visible focus wearable reference architecture
 
 ### 15.2 Reference Implementation Files
 * Hardware Engineering Specification: [`AURA_ORBIT_HARDWARE_DOCS.md`](AURA_ORBIT_HARDWARE_DOCS.md)
-* Interactive Web Control Plane Simulation: [`frontend/control-plane.html`](../../frontend/control-plane.html)
-* Interactive 360° Industrial Showcase: [`frontend/orbit.html`](../../frontend/orbit.html)
+* Interactive Web Control Plane Simulation: [`frontend/control-plane.html`](../../frontend/control-plane.html) ([Live Vercel](https://awsaura-frontend.vercel.app/control-plane))
+* Interactive 360° Industrial Showcase: [`frontend/orbit.html`](../../frontend/orbit.html) ([Live Vercel](https://awsaura-frontend.vercel.app/orbit))
+* Live Multi-Device Hardware Simulator: [awsaura-frontend.vercel.app/simulator](https://awsaura-frontend.vercel.app/simulator)
 * Production Reference PDF Dossier: [`AURA_ORBIT_HARDWARE_SPECIFICATION.pdf`](AURA_ORBIT_HARDWARE_SPECIFICATION.pdf)
 
 ---
