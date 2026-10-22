@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="frontend/assets/NEW_logo/01-aura-primary-dark.png" alt="Project AURA" width="260" />
+<img src="frontend/assets/aura-logo.png" alt="Project AURA" width="260" />
 
 <br/><br/>
 

@@ -1,7 +1,7 @@
 # Project AURA — Enterprise System Architecture & Deployment Dossier
 
 <div align="center">
-  <img src="../frontend/assets/NEW_logo/01-aura-primary-dark.png" alt="Project AURA" width="220" />
+  <img src="../frontend/assets/aura-logo.png" alt="Project AURA" width="220" />
 </div>
 
 <br/>
