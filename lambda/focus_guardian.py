@@ -6,6 +6,7 @@ and falls back safely to 'none' action whenever validation fails.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -14,6 +15,34 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+
+# ---------------------------------------------------------------------------
+# Semantic Proposal Memory Cache (Tier 1 Production Enhancement)
+# ---------------------------------------------------------------------------
+
+_SEMANTIC_PROPOSAL_CACHE: dict[str, tuple[float, FocusProposal, dict[str, Any]]] = {}
+_SEMANTIC_CACHE_TTL_SECONDS: float = float(os.getenv("AURA_SEMANTIC_CACHE_TTL", "300.0"))
+
+
+def compute_semantic_cache_key(request: FocusRequest) -> str:
+    """Compute a deterministic SHA-256 fingerprint from immutable request context."""
+    norm_evidence = sorted(
+        [
+            {"id": str(e.get("id", "")).strip(), "text": str(e.get("text", "")).strip()}
+            for e in request.evidence
+            if isinstance(e, dict) and e.get("id")
+        ],
+        key=lambda item: item["id"],
+    )
+    payload = {
+        "purpose": request.purpose,
+        "explicit_signal": request.explicit_signal,
+        "user_intent": (request.user_intent or "").strip().lower(),
+        "evidence": norm_evidence,
+    }
+    encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 # ---------------------------------------------------------------------------

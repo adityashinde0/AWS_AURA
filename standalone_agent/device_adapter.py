@@ -932,3 +932,43 @@ class DeviceSimulatorAdapter:
                 self.is_online = dev.is_online
 
         return DeviceStatusProxy(device)
+
+
+class HomeAssistantBridgeAdapter(DeviceSimulatorAdapter):
+    """Production Home Assistant REST integration adapter.
+
+    Extends DeviceSimulatorAdapter to bridge local Home Assistant entity states
+    (media_player, light, switch, climate) over long-lived access tokens,
+    falling back seamlessly to deterministic simulation when HA is unreachable.
+    """
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        access_token: str | None = None,
+        timeout: float = 3.0,
+    ) -> None:
+        super().__init__()
+        self.base_url = (base_url or os.getenv("HASS_BASE_URL", "")).rstrip("/")
+        self.access_token = access_token or os.getenv("HASS_ACCESS_TOKEN", "")
+        self.timeout = timeout
+        self.is_configured = bool(self.base_url and self.access_token)
+
+    def call_service(self, domain: str, service: str, entity_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Dispatch a REST service call to the local Home Assistant instance."""
+        if not self.is_configured:
+            return {"success": False, "mode": "simulated", "reason": "unconfigured"}
+
+        try:
+            import requests  # available in standalone_agent
+            url = f"{self.base_url}/api/services/{domain}/{service}"
+            headers = {
+                "Authorization": f"Bearer {self.access_token}",
+                "Content-Type": "application/json",
+            }
+            payload = {"entity_id": entity_id, **(data or {})}
+            resp = requests.post(url, headers=headers, json=payload, timeout=self.timeout)
+            return {"success": resp.status_code == 200, "status_code": resp.status_code, "mode": "live_hass"}
+        except Exception as exc:
+            return {"success": False, "error": str(exc), "mode": "fallback"}
+
