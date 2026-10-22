@@ -29,8 +29,8 @@ const API_CONFIG = {
         return stored.trim().replace(/\/+$/, '');
       }
     }
-    // Default: empty string (Local Demo / Simulation Mode)
-    return '';
+    // Default: Live deployed AWS API Gateway endpoint
+    return 'https://trujdwjp17.execute-api.us-east-1.amazonaws.com';
   },
 
   setBaseUrl(url) {
