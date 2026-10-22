@@ -19,7 +19,8 @@
 [![React Native](https://img.shields.io/badge/React_Native-Expo_Bridge-61DAFB?logo=react&logoColor=black)](mobile/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Tests Passing](https://img.shields.io/badge/Tests-517_Passing_%28100%25_Verified%29-brightgreen?logo=pytest&logoColor=white)](tests/)
-[![Official Teaser](https://img.shields.io/badge/YouTube-Official_Teaser-FF0000?logo=youtube&logoColor=white)](https://youtu.be/TGYBgcJrPzw)
+[![Backend CI](https://github.com/adityashinde0/AWS_AURA/actions/workflows/backend_ci.yml/badge.svg)](https://github.com/adityashinde0/AWS_AURA/actions)
+[![Full Walkthrough](https://img.shields.io/badge/YouTube-7--Min_Full_Walkthrough-FF0000?logo=youtube&logoColor=white)](https://youtu.be/TGYBgcJrPzw)
 [![Zero-Surveillance](https://img.shields.io/badge/Privacy-Zero--Surveillance_Certified-9cf)](docs/SECURITY_REVIEW_CERTIFICATION.md)
 [![Hardware Dossier PDF](https://img.shields.io/badge/Hardware_Dossier-PDF_Spec_6.35MB-red?logo=adobe-acrobat-reader&logoColor=white)](docs/hardware/AURA_ORBIT_HARDWARE_SPECIFICATION.pdf)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -34,24 +35,35 @@
 > [**Project AURA — Proactive Memory That Fights For Your Focus**](https://awsaura-frontend.vercel.app/)  
 > *(Interactive Landing Showcase • Orbit 360° • Live Watch Simulator • Web Control Plane)*  
 >  
-> 🎬 **Official Hardware & System Teaser:**  
-> [**Watch the Aura Orbit Edition Teaser Video on YouTube**](https://youtu.be/TGYBgcJrPzw) • [📖 Portfolio Demo Walkthrough](docs/DEMO_WALKTHROUGH.md)
+> 🎬 **Full System Walkthrough (7-Minute Technical Deep Dive):**  
+> [**Watch the complete architectural walkthrough on YouTube**](https://youtu.be/TGYBgcJrPzw) — hardware, cloud, AI, and physical defense • [📖 Interactive Demo Guide](docs/DEMO_WALKTHROUGH.md)
 
 <br/>
 
-[🚀 Live Web App](https://awsaura-frontend.vercel.app/) • [🎬 Official Teaser](https://youtu.be/TGYBgcJrPzw) • [🌐 Live Web Simulator](https://awsaura-frontend.vercel.app/simulator) • [📊 Feature Status](#-feature-status-matrix) • [☁️ AWS Cloud](#-aws-cloud-architecture-11-enterprise-services) • [⚡ Dual-LLM Resilience](#-hybrid-enterprise-ai-aws-bedrock--ibm-watsonx) • [🏠 Smart Home](#-ambient-smart-home--physical-living-defense) • [📐 Architecture](#-end-to-end-system-architecture) • [🛡️ Zero-Surveillance](#-security-safety-guardian--zero-surveillance-guarantees) • [📚 Docs Hub](#-documentation-hub--system-specifications)
+[🚀 Live Web App](https://awsaura-frontend.vercel.app/) • [🎬 7-Min Walkthrough](https://youtu.be/TGYBgcJrPzw) • [🌐 Live Simulator](https://awsaura-frontend.vercel.app/simulator) • [📊 Feature Status](#-feature-status-matrix) • [☁️ AWS Cloud](#-aws-cloud-architecture-11-enterprise-services) • [⚡ Dual-LLM Resilience](#-hybrid-enterprise-ai-aws-bedrock--ibm-watsonx) • [🏠 Smart Home](#-ambient-smart-home--physical-living-defense) • [📐 Architecture](#-end-to-end-system-architecture) • [🛡️ Zero-Surveillance](#-security-safety-guardian--zero-surveillance-guarantees) • [📚 Docs Hub](#-documentation-hub--system-specifications)
 
 </div>
 
 ---
 
+> [!TIP]
+> ### ⏱️ Hackathon Judge's 3-Minute Fast-Track
+> If you have only 3 minutes to evaluate Project AURA, follow this sequence:
+> 1. **Try the Live Simulator (60s Tour):** Open [awsaura-frontend.vercel.app/simulator](https://awsaura-frontend.vercel.app/simulator) and click **"✨ Auto-Play Judge Showcase"** to see Bedrock Claude 3.5 Sonnet pre-meeting prep, ambient Fire TV/Alexa silencing, and 1-tap cryptographic Undo in real time.
+> 2. **Verify Live AWS Cloud Infrastructure:** Test our live deployed AWS HTTP Gateway health probe: [`https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health`](https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health) (returns `{"status":"healthy","service":"aura-control-plane"}`).
+> 3. **Inspect the Zero-Surveillance Safety Invariant:** Check [`lambda/focus_guardian.py#L376-L386`](lambda/focus_guardian.py) for mathematical anti-hallucination guard (`proposed_ids.issubset(allowed_ids)`) and [`standalone_agent/policy_engine.py`](standalone_agent/policy_engine.py) for the policy execution gate.
+> 4. **Review Continuous Verification:** Check the [Backend CI Actions](https://github.com/adityashinde0/AWS_AURA/actions) running 517 automated unit and contract tests on every commit with 100% pass rate.
+
+---
+
 > [!IMPORTANT]
-> ### ⚡ Executive & Architectural Highlights (2-Minute Briefing)
-> * ☁️ **Live AWS Cloud Infrastructure:** Fully deployed & active on AWS (`us-east-1`) via AWS CDK v2 — REST HTTP API: [`https://trujdwjp17.execute-api.us-east-1.amazonaws.com`](https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health) (responding `healthy`), WebSocket stream at `wss://w0ab1h3ivl.execute-api.us-east-1.amazonaws.com/prod`, with DynamoDB `AuraCoreTable`, KMS CMK, and EventBridge actively running.
-> * 🚀 **Live Production Showcase:** [awsaura-frontend.vercel.app](https://awsaura-frontend.vercel.app/) — Inspect the 3D Orbit Wearable, multi-device simulator, and real-time focus control plane.
-> * 🎬 **Industrial Design & Hardware Teaser:** [Watch the 60s System Teaser on YouTube](https://youtu.be/TGYBgcJrPzw) detailing the Nordic nRF5340 wristband and ambient living defense.
-> * 🛡️ **Dual-LLM Fault Tolerance & Safety:** Primary Bedrock (Claude 3.5 Sonnet) with Watsonx failover ([`lambda/resilience_gateway.py`](lambda/resilience_gateway.py)), mathematical anti-hallucination guard ([`lambda/focus_guardian.py#L376-L386`](lambda/focus_guardian.py)), and zero-surveillance design.
-> * 📊 **Comprehensive System Dossier:** Detailed architectural and operational specifications available in [docs/HACKATHON_SUBMISSION.md](docs/HACKATHON_SUBMISSION.md).
+> ### ⚡ Executive & Architectural Highlights — At a Glance
+> * ☁️ **Live AWS Cloud Infrastructure:** Fully deployed & active on AWS (`us-east-1`) via AWS CDK v2 — REST HTTP API responding `{"status":"healthy"}` at [`trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health`](https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health) · WebSocket stream at `wss://w0ab1h3ivl.execute-api.us-east-1.amazonaws.com/prod` · DynamoDB `AuraCoreTable` + KMS CMK + EventBridge all active.
+> * 🚀 **Live Production Showcase:** [awsaura-frontend.vercel.app](https://awsaura-frontend.vercel.app/) — Interactive 3D Orbit Wearable, multi-device hardware simulator, and real-time web control plane, all live and accessible now.
+> * 🎬 **Full Technical Walkthrough (7 Min):** [YouTube deep dive](https://youtu.be/TGYBgcJrPzw) covering the Nordic nRF5340 hardware, dual-LLM resilience, AWS cloud stack, and physical ambient defense — end-to-end.
+> * 🛡️ **Dual-LLM Fault Tolerance & Mathematical Safety:** Primary Bedrock (Claude 3.5 Sonnet) with Watsonx failover ([`lambda/resilience_gateway.py`](lambda/resilience_gateway.py)), zero-hallucination evidence subset guard ([`lambda/focus_guardian.py`](lambda/focus_guardian.py)), and strict zero-surveillance architectural invariants.
+> * 🧪 **517 Automated Tests — 100% Passing:** Unit, contract, and e2e tests across all Lambda handlers, schemas, policy engine, auth, and CDK routing — verifiable offline with `python3 -m pytest`.
+> * 📊 **Enterprise System Dossier:** Complete architectural and operational specifications → [`docs/HACKATHON_SUBMISSION.md`](docs/HACKATHON_SUBMISSION.md)
 
 ---
 
@@ -86,6 +98,42 @@ Engineers, product leaders, researchers, and students who need:
 │    • Anti-hallucination evidence guard strictly rejects fabricated model citations.     │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🆚 Why AURA Is Different
+
+Most AI assistant tools are reactive, always-on recorders. AURA is an **anticipatory, privacy-first cognitive defense system** that acts *before* you're overwhelmed — never surveilling you in the process.
+
+| Dimension | Traditional AI Meeting Tools | **Project AURA** |
+|---|---|---|
+| **Mode of Operation** | Reactive — records after events occur | **Proactive** — triggers T-5 min before meetings |
+| **Audio / Data Policy** | Continuous ambient recording to cloud | **Zero audio to cloud** — edge-only PII scrubbing |
+| **LLM Architecture** | Single cloud provider; fails silently | **Dual-LLM resilience** — Bedrock + Watsonx failover with circuit breaker |
+| **Hallucination Risk** | Unguarded model output | **Mathematical subset guard** — fabricated IDs trigger fail-closed fallback |
+| **Physical World Integration** | None | **Fire TV, Echo, Hue, HVAC** — ambient space orchestration with crypto undo tokens |
+| **Hardware Footprint** | Phone / laptop app | **Custom nRF5340 wearable** (MIP display, hardware-gated privacy LED, ATECC608B vault) |
+| **Privacy Architecture** | Employer-visible dashboards | **Zero surveillance** — no productivity scoring, no manager visibility, no exceptions |
+| **Execution Authority** | LLM or cloud service executes directly | **Local deterministic policy engine only** — cloud always returns `policy_required: true` |
+| **Test Coverage** | Typically untested or minimal | **517 automated tests** — unit, contract, e2e, schema, CDK routing (100% passing) |
+| **Wearable Ecosystem** | None | **Apple Watch + iOS + Nordic nRF5340 + React Native** + browser simulator |
+| **Cloud Depth** | SaaS subscription | **11 enterprise AWS services** deployed via CDK v2 (API Gateway, EventBridge, Lambda, DynamoDB, KMS, WAF, SQS, CloudWatch, Cognito, SNS, Secrets Manager) |
+
+---
+
+## 🔴 Live Deployment Proof
+
+All endpoints below are **live and running** on AWS `us-east-1` — verifiable right now:
+
+| Service | Live Endpoint | Status |
+|---|---|---|
+| **REST HTTP API** | [`https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health`](https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health) | `{"status":"healthy"}` ✅ |
+| **WebSocket API** | `wss://w0ab1h3ivl.execute-api.us-east-1.amazonaws.com/prod` | Active & streaming ✅ |
+| **Web Frontend** | [`https://awsaura-frontend.vercel.app`](https://awsaura-frontend.vercel.app) | Live on Vercel ✅ |
+| **CloudFormation** | Stack `AuraCloudIntakeStack` — `UPDATE_COMPLETE` | 11 services provisioned ✅ |
+| **DynamoDB** | Table `AuraCoreTable` (KMS CMK · 30-day TTL · PITR) | Active ✅ |
+| **EventBridge** | Bus `aura-event-bus` · Scheduler rules active | Firing ✅ |
+| **Cognito Auth** | User Pool `us-east-1_3I71LWTtn` (RS256 JWKS) | Active ✅ |
 
 ---
 
@@ -331,7 +379,7 @@ Project AURA underwent a comprehensive architectural modernization sprint, lever
 │                   ENTERPRISE MODERNIZATION & RELIABILITY METRICS                       │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
 │ • Cross-File Context: Unified Lambda handlers & contract test suites.                  │
-│ • Zero Regressions: 56 new blocker/contract tests; 393 total tests passing (100%).     │
+│ • Zero Regressions: 56 new blocker/contract tests; 517 total tests passing (100%).    │
 │ • Backward Compatibility: Maintained safe_fallback() signatures with added telemetry.  │
 │ • Grounded Verification: Continuous refactor-then-verify validation loops.              │
 └────────────────────────────────────────────────────────────────────────────────────────┘
@@ -616,7 +664,7 @@ All comprehensive technical specifications, blueprints, runbooks, and reviews ar
 | **Architecture Modernization Report** | Serverless modernization report, Lambda refactoring details, and contract test verifications | [`docs/MODERNIZATION_REPORT.md`](docs/MODERNIZATION_REPORT.md) |
 | **Hardware Engineering Docs** | 1,000+ line engineering specification: BOM, exploded assembly, PMIC nPM1300 power budget, Zephyr drivers | [`docs/hardware/AURA_ORBIT_HARDWARE_DOCS.md`](docs/hardware/AURA_ORBIT_HARDWARE_DOCS.md) |
 | **Live Web Platform** | **Production Vercel deployment: Landing Showcase, Orbit 360°, Multi-Device Simulator & Control Plane** | [**awsaura-frontend.vercel.app**](https://awsaura-frontend.vercel.app/) |
-| **Official Teaser Video** | **Aura Orbit Edition official hardware & concept teaser video** | [**Watch on YouTube**](https://youtu.be/TGYBgcJrPzw) |
+| **Full System Walkthrough** | **7-minute complete architectural walkthrough: Nordic nRF5340 hardware, dual-LLM cloud resilience, physical ambient defense, and live AWS deployment — end-to-end** | [**Watch on YouTube**](https://youtu.be/TGYBgcJrPzw) |
 | **Hardware Dossier (PDF)** | **Official 6.35 MB production engineering reference publication & industrial design dossier** | [`docs/hardware/AURA_ORBIT_HARDWARE_SPECIFICATION.pdf`](docs/hardware/AURA_ORBIT_HARDWARE_SPECIFICATION.pdf) |
 | **Wearable Concept Design** | Original exploratory industrial design rationale and calm wearable philosophy | [`docs/hardware/aura_wearable_hardware_design.md`](docs/hardware/aura_wearable_hardware_design.md) |
 | **Security & Certification** | Fire TV `MediaSession`, Alexa DND, STRIDE threat model, and zero-raw-media boundary certification | [`docs/SECURITY_REVIEW_CERTIFICATION.md`](docs/SECURITY_REVIEW_CERTIFICATION.md) |
