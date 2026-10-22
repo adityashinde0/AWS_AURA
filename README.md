@@ -7,6 +7,7 @@
 <br/><br/>
 
 [![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock_Claude_3.5_Sonnet-FF9900?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/bedrock/)
+[![AWS Live Backend](https://img.shields.io/badge/AWS_Live_Backend-Deployed_%26_Healthy-FF9900?logo=amazon-aws&logoColor=white)](https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health)
 [![AWS Cloud Architecture](https://img.shields.io/badge/AWS_Cloud-11_Enterprise_Services-232F3E?logo=amazon-aws&logoColor=white)](#-aws-cloud-architecture-11-enterprise-services)
 [![AWS CDK v2](https://img.shields.io/badge/AWS_CDK-v2_TypeScript-FF9900?logo=amazon-aws&logoColor=white)](infra/)
 [![AWS Well-Architected](https://img.shields.io/badge/AWS-Well--Architected-232F3E?logo=amazon-aws&logoColor=white)](#-aws-well-architected-framework-alignment)
@@ -46,9 +47,9 @@
 
 > [!IMPORTANT]
 > ### ⚡ Executive & Architectural Highlights (2-Minute Briefing)
+> * ☁️ **Live AWS Cloud Infrastructure:** Fully deployed & active on AWS (`us-east-1`) via AWS CDK v2 — REST HTTP API: [`https://trujdwjp17.execute-api.us-east-1.amazonaws.com`](https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health) (responding `healthy`), WebSocket stream at `wss://w0ab1h3ivl.execute-api.us-east-1.amazonaws.com/prod`, with DynamoDB `AuraCoreTable`, KMS CMK, and EventBridge actively running.
 > * 🚀 **Live Production Showcase:** [awsaura-frontend.vercel.app](https://awsaura-frontend.vercel.app/) — Inspect the 3D Orbit Wearable, multi-device simulator, and real-time focus control plane.
 > * 🎬 **Industrial Design & Hardware Teaser:** [Watch the 60s System Teaser on YouTube](https://youtu.be/TGYBgcJrPzw) detailing the Nordic nRF5340 wristband and ambient living defense.
-> * ☁️ **Enterprise Cloud Fabric:** Full infrastructure-as-code orchestrating **11 AWS Services** via AWS CDK v2 in TypeScript ([`infra/lib/aura-cloud-intake-stack.ts`](infra/lib/aura-cloud-intake-stack.ts)).
 > * 🛡️ **Dual-LLM Fault Tolerance & Safety:** Primary Bedrock (Claude 3.5 Sonnet) with Watsonx failover ([`lambda/resilience_gateway.py`](lambda/resilience_gateway.py)), mathematical anti-hallucination guard ([`lambda/focus_guardian.py#L376-L386`](lambda/focus_guardian.py)), and zero-surveillance design.
 > * 📊 **Comprehensive System Dossier:** Detailed architectural and operational specifications available in [docs/HACKATHON_SUBMISSION.md](docs/HACKATHON_SUBMISSION.md).
 
