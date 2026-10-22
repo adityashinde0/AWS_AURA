@@ -205,14 +205,27 @@ def test_user_data_isolation_in_durable_store(mock_table: MockDynamoTable):
 
 def test_production_mode_requires_dynamodb_and_fails_safely_when_unavailable(monkeypatch):
     """In production mode, missing storage raises StorageUnavailableError and never silently uses in-memory."""
+    from botocore.exceptions import ClientError, EndpointConnectionError
+
     monkeypatch.setenv("AURA_STORAGE_MODE", "dynamodb")
     monkeypatch.setenv("AURA_CORE_TABLE", "NonExistentTable123")
 
-    # Without store_override, get_datastore attempts to initialize DynamoDB and raises
+    class MissingBotoTable:
+        def load(self):
+            raise ClientError(
+                {"Error": {"Code": "ResourceNotFoundException", "Message": "Cannot do operations on a non-existent table"}},
+                "DescribeTable",
+            )
+
+    # 1. Missing table raises StorageUnavailableError via ResourceNotFoundException (mocked, 0 live AWS calls)
+    monkeypatch.setattr(
+        "boto3.resource",
+        lambda *args, **kwargs: type("MockResource", (), {"Table": lambda self, name: MissingBotoTable()})(),
+    )
     with pytest.raises(StorageUnavailableError):
         get_datastore(store_override=None)
 
-    # In lambda_handler, returns HTTP 503
+    # 2. In lambda_handler, returns HTTP 503 (mocked, 0 live AWS calls)
     event = {
         "rawPath": "/api/v1/consent/grants",
         "requestContext": {"http": {"method": "GET"}},
@@ -222,3 +235,32 @@ def test_production_mode_requires_dynamodb_and_fails_safely_when_unavailable(mon
     assert resp["statusCode"] == 503
     body = json.loads(resp["body"])
     assert body["error"] == "storage_unavailable"
+
+    # 3. Connection and BotoCore errors are translated to StorageUnavailableError
+    class FailingBotoTable:
+        def load(self):
+            raise EndpointConnectionError(endpoint_url="https://dynamodb.us-east-1.amazonaws.com")
+
+    monkeypatch.setattr(
+        "boto3.resource",
+        lambda *args, **kwargs: type("MockResource", (), {"Table": lambda self, name: FailingBotoTable()})(),
+    )
+    with pytest.raises(StorageUnavailableError):
+        DynamoDBDataStore(table=None, table_name="AnyTable")
+
+    # 4. Unexpected programming errors (e.g. TypeError) are NOT swallowed as StorageUnavailableError
+    class BuggyBotoTable:
+        def load(self):
+            raise TypeError("Unexpected code defect inside table processing")
+
+    monkeypatch.setattr(
+        "boto3.resource",
+        lambda *args, **kwargs: type("MockResource", (), {"Table": lambda self, name: BuggyBotoTable()})(),
+    )
+    with pytest.raises(TypeError):
+        DynamoDBDataStore(table=None, table_name="AnyTable")
+
+    # 5. Dependency-injected table does not call load() or contact AWS
+    injected_mock = MockDynamoTable()
+    store = DynamoDBDataStore(table=injected_mock)
+    assert store.table is injected_mock

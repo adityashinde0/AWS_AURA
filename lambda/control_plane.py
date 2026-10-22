@@ -116,9 +116,20 @@ class DynamoDBDataStore(DataStore):
         else:
             try:
                 import boto3
+                from botocore.config import Config
+                from botocore.exceptions import BotoCoreError, ClientError
+            except ImportError as exc:
+                raise StorageUnavailableError(
+                    f"boto3 and botocore are required for durable DynamoDB storage: {exc}"
+                ) from exc
+
+            try:
                 target_table = table_name or CORE_TABLE_NAME
-                self.table = boto3.resource("dynamodb").Table(target_table)
-            except Exception as exc:
+                region = os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+                cfg = Config(connect_timeout=2, read_timeout=2, retries={"max_attempts": 1})
+                self.table = boto3.resource("dynamodb", region_name=region, config=cfg).Table(target_table)
+                self.table.load()
+            except (BotoCoreError, ClientError) as exc:
                 raise StorageUnavailableError(f"Failed to initialize DynamoDB table: {exc}") from exc
 
         self.device_adapter: DeviceSimulatorAdapter = DeviceSimulatorAdapter()

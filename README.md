@@ -236,7 +236,7 @@ Project AURA is engineered to satisfy all five core pillars of the **AWS Well-Ar
 
 ## ⚡ Hybrid Enterprise AI: AWS Bedrock + IBM Watsonx
 
-To maximize resilience and operational continuity during high-stakes pre-meeting windows, Project AURA implements a dual-cloud **Resilience Gateway** ([`standalone_agent/resilience_gateway.py`](standalone_agent/resilience_gateway.py), [`lambda/resilience_gateway.py`](lambda/resilience_gateway.py)):
+To maximize resilience and operational continuity during high-stakes pre-meeting windows, Project AURA implements a dual-cloud **Resilience Gateway** ([`lambda/resilience_gateway.py`](lambda/resilience_gateway.py)):
 
 ```mermaid
 flowchart LR
