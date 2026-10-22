@@ -2,6 +2,10 @@
 
 <div align="center">
 
+<img src="frontend/assets/NEW_logo/01-aura-primary-dark.png" alt="Project AURA" width="260" />
+
+<br/><br/>
+
 [![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock_Claude_3.5_Sonnet-FF9900?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/bedrock/)
 [![AWS Cloud Architecture](https://img.shields.io/badge/AWS_Cloud-11_Enterprise_Services-232F3E?logo=amazon-aws&logoColor=white)](#-aws-cloud-architecture-11-enterprise-services)
 [![AWS CDK v2](https://img.shields.io/badge/AWS_CDK-v2_TypeScript-FF9900?logo=amazon-aws&logoColor=white)](infra/)
@@ -37,6 +41,16 @@
 [🚀 Live Web App](https://awsaura-frontend.vercel.app/) • [🎬 Official Teaser](https://youtu.be/TGYBgcJrPzw) • [🌐 Live Web Simulator](https://awsaura-frontend.vercel.app/simulator) • [📊 Feature Status](#-feature-status-matrix) • [☁️ AWS Cloud](#-aws-cloud-architecture-11-enterprise-services) • [⚡ Dual-LLM Resilience](#-hybrid-enterprise-ai-aws-bedrock--ibm-watsonx) • [🏠 Smart Home](#-ambient-smart-home--physical-living-defense) • [📐 Architecture](#-end-to-end-system-architecture) • [🛡️ Zero-Surveillance](#-security-safety-guardian--zero-surveillance-guarantees) • [📚 Docs Hub](#-documentation-hub--system-specifications)
 
 </div>
+
+---
+
+> [!IMPORTANT]
+> ### 🏆 Fast-Track Evaluation Guide for Hackathon Judges (2-Minute Overview)
+> * 🚀 **Live Interactive Web Demo:** [awsaura-frontend.vercel.app](https://awsaura-frontend.vercel.app/) — Test the 3D Orbit Wearable, live watch simulator, and focus sessions in real time (zero installation or login needed).
+> * 🎬 **Official Video Walkthrough:** [YouTube Teaser (60s)](https://youtu.be/TGYBgcJrPzw) covering hardware design, calm ambient defense, and the T-5 pre-meeting workflow.
+> * ☁️ **AWS Cloud Architecture:** Orchestrates **11 enterprise AWS services** defined in AWS CDK v2 TypeScript ([`infra/lib/aura-cloud-intake-stack.ts`](infra/lib/aura-cloud-intake-stack.ts)).
+> * ⚡ **AI Resilience & Deterministic Safety:** Primary Bedrock (Claude 3.5 Sonnet) with Watsonx failover ([`lambda/resilience_gateway.py`](lambda/resilience_gateway.py)), mathematical anti-hallucination guard ([`lambda/focus_guardian.py#L376-L386`](lambda/focus_guardian.py)), and zero-surveillance design.
+> * 📖 **Full Submission Dossier:** Detailed judging package available in [docs/HACKATHON_SUBMISSION.md](docs/HACKATHON_SUBMISSION.md).
 
 ---
 

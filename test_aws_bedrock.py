@@ -75,6 +75,8 @@ runtime = boto3.client("bedrock-runtime", region_name=region)
 
 # Try Claude models available on Bedrock
 candidate_models = [
+    "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
     "anthropic.claude-haiku-4-5-20251001-v1:0",
     "anthropic.claude-sonnet-4-5-20250929-v1:0",
     "anthropic.claude-sonnet-4-6",

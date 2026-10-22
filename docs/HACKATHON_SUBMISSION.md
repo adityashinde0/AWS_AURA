@@ -1,5 +1,11 @@
 # Project AURA — Hackathon Submission Package
 
+<div align="center">
+  <img src="../frontend/assets/NEW_logo/01-aura-primary-dark.png" alt="Project AURA" width="220" />
+</div>
+
+<br/>
+
 **Project Name:** Project AURA — Proactive Memory That Fights For Your Focus  
 **Tagline:** Bee remembers what you forgot. Aura remembers what you're about to forget, and stops the world from distracting you.  
 **Repository:** [github.com/adityashinde0/AWS_AURA](https://github.com/adityashinde0/AWS_AURA)  
