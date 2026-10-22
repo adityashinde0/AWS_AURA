@@ -1,4 +1,4 @@
-# Project AURA — Hackathon Submission Package
+# Project AURA — Enterprise System Architecture & Deployment Dossier
 
 <div align="center">
   <img src="../frontend/assets/NEW_logo/01-aura-primary-dark.png" alt="Project AURA" width="220" />
@@ -68,7 +68,7 @@ AURA features a production-grade dual-tier AI fallback architecture:
 
 ## 5. Live vs. Simulated Verification Boundaries
 
-To ensure full transparency during hackathon evaluation:
+To ensure full architectural transparency during technical audit and evaluation:
 
 * **Real AWS Cloud Components (Verified Live on AWS):**
   * HTTP API Gateway and WebSocket API endpoints.

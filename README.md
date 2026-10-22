@@ -45,12 +45,12 @@
 ---
 
 > [!IMPORTANT]
-> ### 🏆 Fast-Track Evaluation Guide for Hackathon Judges (2-Minute Overview)
-> * 🚀 **Live Interactive Web Demo:** [awsaura-frontend.vercel.app](https://awsaura-frontend.vercel.app/) — Test the 3D Orbit Wearable, live watch simulator, and focus sessions in real time (zero installation or login needed).
-> * 🎬 **Official Video Walkthrough:** [YouTube Teaser (60s)](https://youtu.be/TGYBgcJrPzw) covering hardware design, calm ambient defense, and the T-5 pre-meeting workflow.
-> * ☁️ **AWS Cloud Architecture:** Orchestrates **11 enterprise AWS services** defined in AWS CDK v2 TypeScript ([`infra/lib/aura-cloud-intake-stack.ts`](infra/lib/aura-cloud-intake-stack.ts)).
-> * ⚡ **AI Resilience & Deterministic Safety:** Primary Bedrock (Claude 3.5 Sonnet) with Watsonx failover ([`lambda/resilience_gateway.py`](lambda/resilience_gateway.py)), mathematical anti-hallucination guard ([`lambda/focus_guardian.py#L376-L386`](lambda/focus_guardian.py)), and zero-surveillance design.
-> * 📖 **Full Submission Dossier:** Detailed judging package available in [docs/HACKATHON_SUBMISSION.md](docs/HACKATHON_SUBMISSION.md).
+> ### ⚡ Executive & Architectural Highlights (2-Minute Briefing)
+> * 🚀 **Live Production Showcase:** [awsaura-frontend.vercel.app](https://awsaura-frontend.vercel.app/) — Inspect the 3D Orbit Wearable, multi-device simulator, and real-time focus control plane.
+> * 🎬 **Industrial Design & Hardware Teaser:** [Watch the 60s System Teaser on YouTube](https://youtu.be/TGYBgcJrPzw) detailing the Nordic nRF5340 wristband and ambient living defense.
+> * ☁️ **Enterprise Cloud Fabric:** Full infrastructure-as-code orchestrating **11 AWS Services** via AWS CDK v2 in TypeScript ([`infra/lib/aura-cloud-intake-stack.ts`](infra/lib/aura-cloud-intake-stack.ts)).
+> * 🛡️ **Dual-LLM Fault Tolerance & Safety:** Primary Bedrock (Claude 3.5 Sonnet) with Watsonx failover ([`lambda/resilience_gateway.py`](lambda/resilience_gateway.py)), mathematical anti-hallucination guard ([`lambda/focus_guardian.py#L376-L386`](lambda/focus_guardian.py)), and zero-surveillance design.
+> * 📊 **Comprehensive System Dossier:** Detailed architectural and operational specifications available in [docs/HACKATHON_SUBMISSION.md](docs/HACKATHON_SUBMISSION.md).
 
 ---
 
