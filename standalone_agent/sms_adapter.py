@@ -20,6 +20,8 @@ class SmsAdapter:
     def _get_client(self) -> Any:
         if self._sns_client is not None:
             return self._sns_client
+        if os.getenv("TEST_MODE") == "true" or os.getenv("AURA_OFFLINE_MODE") == "true" or "PYTEST_CURRENT_TEST" in os.environ:
+            return None
         # Only initialize live boto3 client if explicit AWS credentials/region are present
         if os.getenv("AWS_ACCESS_KEY_ID") and os.getenv("AWS_DEFAULT_REGION"):
             try:
