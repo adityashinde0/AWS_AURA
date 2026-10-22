@@ -26,6 +26,7 @@ import os
 import sys
 import time
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from standalone_agent.device_adapter import DeviceInfo, DeviceSimulatorAdapter
@@ -61,6 +62,28 @@ CORE_TABLE_NAME = os.getenv("AURA_CORE_TABLE", "AuraCoreTable")
 # ---------------------------------------------------------------------------
 # Storage Errors & DataStore Abstraction
 # ---------------------------------------------------------------------------
+
+def _dynamo_serialize(obj: Any) -> Any:
+    """Recursively convert float timestamps and numbers to int for DynamoDB and JSON compatibility."""
+    if isinstance(obj, float):
+        return int(obj)
+    if isinstance(obj, dict):
+        return {k: _dynamo_serialize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_dynamo_serialize(v) for v in obj]
+    return obj
+
+
+def _dynamo_deserialize(obj: Any) -> Any:
+    """Recursively convert Decimal back to int or float when reading from DynamoDB."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj % 1 == 0 else float(obj)
+    if isinstance(obj, dict):
+        return {k: _dynamo_deserialize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_dynamo_deserialize(v) for v in obj]
+    return obj
+
 
 class StorageError(Exception):
     """Raised when durable storage operations fail."""
@@ -123,7 +146,7 @@ class DynamoDBDataStore(DataStore):
                 ExpressionAttributeValues={":pk": pk, ":sk_prefix": "GRANT#"},
                 KeyConditionExpression="#pk = :pk AND begins_with(#sk, :sk_prefix)",
             )
-            return [it for it in res.get("Items", []) if it.get("active", True)]
+            return [_dynamo_deserialize(it) for it in res.get("Items", []) if it.get("active", True)]
         except Exception as exc:
             raise StorageError(f"DynamoDB get_grants failed: {exc}") from exc
 
@@ -135,8 +158,9 @@ class DynamoDBDataStore(DataStore):
         grant_copy["PK"] = f"TENANT#{tenant_id}#USER#{user_id}"
         grant_copy["SK"] = f"GRANT#{action_type}"
         grant_copy["ttl"] = int(grant_copy.get("expires_at", time.time() + 86400 * 30))
+        item = _dynamo_serialize(grant_copy)
         try:
-            self.table.put_item(Item=grant_copy)
+            self.table.put_item(Item=item)
             return grant_copy
         except Exception as exc:
             raise StorageError(f"DynamoDB save_grant failed: {exc}") from exc
@@ -168,7 +192,7 @@ class DynamoDBDataStore(DataStore):
                 ScanIndexForward=False,
                 Limit=limit,
             )
-            return res.get("Items", [])
+            return [_dynamo_deserialize(it) for it in res.get("Items", [])]
         except Exception as exc:
             raise StorageError(f"DynamoDB get_audit_records failed: {exc}") from exc
 
@@ -183,8 +207,9 @@ class DynamoDBDataStore(DataStore):
         rec_copy["GSI1PK"] = f"USER#{user_id}#ACTION_TYPE#{record.get('action_type', 'none')}"
         rec_copy["GSI1SK"] = f"AUDIT#{int(now)}"
         rec_copy["ttl"] = int(now + 86400 * 90)
+        item = _dynamo_serialize(rec_copy)
         try:
-            self.table.put_item(Item=rec_copy)
+            self.table.put_item(Item=item)
             return rec_copy
         except Exception as exc:
             raise StorageError(f"DynamoDB record_audit failed: {exc}") from exc
@@ -192,7 +217,8 @@ class DynamoDBDataStore(DataStore):
     def get_undo_record(self, undo_token: str) -> dict[str, Any] | None:
         try:
             res = self.table.get_item(Key={"PK": f"UNDO#{undo_token}", "SK": "RECORD"})
-            return res.get("Item")
+            item = res.get("Item")
+            return _dynamo_deserialize(item) if item else None
         except Exception as exc:
             raise StorageError(f"DynamoDB get_undo_record failed: {exc}") from exc
 
@@ -495,7 +521,8 @@ class DynamoDBDataStore(DataStore):
     def get_focus_session(self, user_id: str, session_id: str) -> dict[str, Any] | None:
         try:
             res = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": f"SESSION#{session_id}"})
-            return res.get("Item")
+            item = res.get("Item")
+            return _dynamo_deserialize(item) if item else None
         except Exception as exc:
             raise StorageError(f"DynamoDB get_focus_session failed: {exc}") from exc
 
@@ -504,8 +531,9 @@ class DynamoDBDataStore(DataStore):
         sess_copy["PK"] = f"USER#{session['user_id']}"
         sess_copy["SK"] = f"SESSION#{session['session_id']}"
         sess_copy["ttl"] = int(session.get("expires_at", time.time() + 86400 * 30))
+        item = _dynamo_serialize(sess_copy)
         try:
-            self.table.put_item(Item=sess_copy)
+            self.table.put_item(Item=item)
             return sess_copy
         except Exception as exc:
             raise StorageError(f"DynamoDB save_focus_session failed: {exc}") from exc
@@ -513,7 +541,7 @@ class DynamoDBDataStore(DataStore):
     def get_preferences(self, user_id: str) -> dict[str, Any]:
         try:
             res = self.table.get_item(Key={"PK": f"USER#{user_id}", "SK": "PREFERENCES"})
-            return res.get("Item", {}).get("preferences", {})
+            return _dynamo_deserialize(res.get("Item", {}).get("preferences", {}))
         except Exception as exc:
             raise StorageError(f"DynamoDB get_preferences failed: {exc}") from exc
 
@@ -884,7 +912,10 @@ def _json_resp(status: int, data: dict[str, Any]) -> dict[str, Any]:
             "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
             "access-control-allow-headers": "Content-Type,Authorization",
         },
-        "body": json.dumps(data),
+        "body": json.dumps(
+            data,
+            default=lambda o: int(o) if isinstance(o, Decimal) and o % 1 == 0 else (float(o) if isinstance(o, Decimal) else str(o))
+        ),
     }
 
 

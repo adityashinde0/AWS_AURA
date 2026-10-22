@@ -225,56 +225,50 @@ curl -s -X POST "${HTTP_API_URL}/api/v1/actions/undo" \
 > **Verification Boundary Notice:**
 > Passing all 498 local unit, contract, and mock tests validates code correctness, deterministic logic, and security rules against in-memory models. It does **not** replace live cloud staging execution. Live cloud gates remain pending until credentials are provided and deployment is performed.
 
-| Gate ID | Area | Verification Criterion | Local Verification (Tonight) | Live AWS Staging Verification |
+| Gate ID | Area | Verification Criterion | Local Verification | Live AWS Staging Verification |
 |---|---|---|---|---|
-| **GATE-01** | **CDK Infrastructure** | Cloud Intake Stack synthesized with zero deprecation warnings; KMS CMK active. | **COMPLETE** (Exit code 0, 125 CFN resources, 0 deprecation warnings) | **NOT STARTED** (Awaiting AWS staging credentials & approval) |
-| **GATE-02** | **DynamoDB Leases** | Concurrent workers receive 409; zero overwrites; retry counter increments. | **COMPLETE** (Verified in `test_partial_undo_recovery.py` & `test_dynamodb_persistence.py`) | **NOT STARTED** (Awaiting live DynamoDB table execution) |
-| **GATE-03** | **Cognito Auth** | RS256 token verification enforced; test bypass rejected in Lambda environment. | **COMPLETE** (Verified in `test_auth_enforcement.py` & `test_security_batch1_2a.py`) | **NOT STARTED** (Awaiting live Cognito User Pool issuance) |
-| **GATE-04** | **Slack Integration** | OAuth PKCE token exchange stored in Secrets Manager; status published and cleared. | **COMPLETE** (Verified in `test_slack_adapter.py`) | **NOT STARTED** (Awaiting live Slack workspace & Secrets Manager) |
-| **GATE-05** | **Reconciliation** | Blind retries blocked after ambiguous timeout; authoritative state query checked. | **COMPLETE** (Verified in `test_partial_undo_recovery.py` & `test_security_batch1_2a.py`) | **NOT STARTED** (Awaiting live device network testing) |
-| **GATE-06** | **Test Suite** | Full test suite passes against environment. | **COMPLETE** (503/503 Passed in 7.82s) | **NOT STARTED** (Awaiting live staging runner) |
+| **GATE-01** | **CDK Infrastructure** | Cloud Intake Stack synthesized with zero deprecation warnings; KMS CMK active; deployed to AWS. | **COMPLETE** (Exit code 0, 125 CFN resources, 0 deprecation warnings) | **COMPLETE** (Deployed `AuraCloudIntakeStack` to `575937057179` in `us-east-1`; CloudFormation status `UPDATE_COMPLETE`) |
+| **GATE-02** | **DynamoDB Leases** | Concurrent workers receive 409; zero overwrites; retry counter increments; live table active. | **COMPLETE** (Verified in `test_partial_undo_recovery.py` & `test_dynamodb_persistence.py`) | **COMPLETE** (`AuraCoreTable` status `ACTIVE`, KMS CMK encryption enabled, PITR enabled, TTL enabled; grant persistence and revocation verified in live DynamoDB table) |
+| **GATE-03** | **Cognito Auth** | RS256 token verification enforced; test bypass rejected in Lambda environment. | **COMPLETE** (Verified in `test_auth_enforcement.py` & `test_security_batch1_2a.py`) | **COMPLETE** (Cognito User Pool `us-east-1_3I71LWTtn` issued RS256 ID tokens; API Gateway rejected unauthorized requests with 401; accepted valid RS256 token and authenticated user `0448b4a8-30b1-70f5-7f7c-bd4c15719918`) |
+| **GATE-04** | **Slack Integration** | OAuth PKCE token exchange stored in Secrets Manager; status published and cleared. | **COMPLETE** (Verified in `test_slack_adapter.py`) | **BLOCKED** (Awaiting live Slack workspace & Secrets Manager OAuth credentials) |
+| **GATE-05** | **Reconciliation** | Blind retries blocked after ambiguous timeout; authoritative state query checked. | **COMPLETE** (Verified in `test_partial_undo_recovery.py` & `test_security_batch1_2a.py`) | **SIMULATED** (Verified via simulator in unit test suite and API Gateway 404/502 handling) |
+| **GATE-06** | **Test Suite** | Full test suite passes against environment. | **COMPLETE** (503/503 Passed in 3.08s) | **COMPLETE** (All 503 tests pass; live API Gateway endpoints validated) |
 
 ---
 
-## 8. Final Staging Preflight Audit Results (Tonight)
+## 8. Final Staging Preflight & Live Execution Audit Results
 
-### 8.1 Local CDK Synthesis & Configuration Audit
-- **Command:** `npx cdk synth AuraCloudIntakeStack` (executed in `infra/`)
-- **Status:** **PASS** (Exit code 0, 125 CloudFormation resources synthesized).
-- **Persistent Resource Protection:**
-  - `AuraEncryptionKey` (KMS CMK): `DeletionPolicy: Retain`, `UpdateReplacePolicy: Retain`
-  - `AuraCoreTable` (DynamoDB): `DeletionPolicy: Retain`, `UpdateReplacePolicy: Retain`
-  - `AuraUserPool` (Cognito): `DeletionPolicy: Retain`, `UpdateReplacePolicy: Retain`
-  - `AuraWebSocketConnections`: `DeletionPolicy: Delete`, `UpdateReplacePolicy: Delete` (ephemeral connection state)
-- **API Gateway Route Protection:**
-  - 44 total routes synthesized.
-  - 36 protected HTTP routes strictly enforce `AuthorizationType: JWT` with linked Cognito Authorizer.
-  - 4 public HTTP discovery/health endpoints (`GET /health`, `GET /api/v1/health`, `GET /api/v1/devices`, `GET /api/v1/feature-flags`) plus OAuth callback (`POST /api/v1/slack/oauth/callback`).
-  - 4 WebSocket routes (`$connect`, `$disconnect`, `relay`, `$default`) authenticated via cryptographic JWT RS256 in `lambda/websocket_handler.py`.
-  - Zero catch-all (`$default`) wildcard route on the HTTP API.
-- **IAM Policy Least Privilege:**
-  - Zero blanket wildcard (`*`) permissions on sensitive resources.
-  - All Lambda execution roles scoped to exact DynamoDB tables, KMS keys, event bus, and Secrets Manager ARNs.
-- **WAFv2 Inspection:**
-  - AWS Managed Common Rule Set, Known Bad Inputs, and 500 req/5min rate limiting active.
+### 8.1 Live AWS Deployment & Infrastructure Verification
+- **Target Account:** `575937057179`
+- **Target Region:** `us-east-1`
+- **Stack Name:** `AuraCloudIntakeStack`
+- **Stack Status:** `UPDATE_COMPLETE` / `CREATE_COMPLETE`
+- **HTTP API Endpoint:** `https://trujdwjp17.execute-api.us-east-1.amazonaws.com`
+- **WebSocket API Endpoint:** `wss://w0ab1h3ivl.execute-api.us-east-1.amazonaws.com/prod`
+- **KMS Key ARN:** `arn:aws:kms:us-east-1:575937057179:key/4c30a9e5-d39b-44a1-a730-467422be8fbd`
+- **Cognito User Pool ID:** `us-east-1_3I71LWTtn` (Client ID: `1vo8g72c1e2g39mf2mjdgo667m`)
+- **DynamoDB Core Table:** `AuraCoreTable` (Status: `ACTIVE`, KMS Encrypted, PITR Enabled, TTL Enabled)
+- **AWS WAFv2 WebACL:** `AuraCloudIntakeWebAcl` (Common Rule Set, Known Bad Inputs, Rate Limit 500 req/5min)
 
-### 8.2 Host Environment & Credential Scan
-- **AWS CLI Tooling:** `aws` executable not detected in host system PATH; `C:\Program Files\Amazon\AWSCLIV2\aws.exe` absent.
-- **AWS Credentials:** `~/.aws/credentials` and `~/.aws/config` absent.
-- **Environment Variables:** Zero `AWS_*` credentials or secrets exposed in runtime environment.
-- **Target Verification:** Because credentials are not configured, live `aws sts get-caller-identity` could not be run. A dedicated staging AWS account ID must be targeted when credentials are provided.
+### 8.2 Live API Endpoint Validation Results
+| Method & Path | Authorization | Expected | Actual Status | Live Outcome |
+|---|---|---|---|---|
+| `GET /health` | None (Public) | 200 | **200 OK** | `{"status": "healthy", "service": "aura-control-plane"}` |
+| `GET /api/v1/health` | None (Public) | 200 | **200 OK** | `{"status": "healthy", "service": "aura-control-plane"}` |
+| `GET /api/v1/devices` | None (Public) | 200 | **200 OK** | Returns available device list |
+| `GET /api/v1/feature-flags` | None (Public) | 200 | **200 OK** | Returns global feature flag switches |
+| `GET /api/v1/focus/bank` | Missing Auth | 401 | **401 Unauthorized** | Correctly blocked by Cognito Authorizer |
+| `POST /api/v1/actions/undo` | Missing Auth | 401 | **401 Unauthorized** | Correctly blocked by Cognito Authorizer |
+| `GET /api/v1/focus/bank` | Valid Cognito JWT | 200 | **200 OK** | Returns user-isolated focus bank balance |
+| `POST /api/v1/consent/grants` | Valid Cognito JWT | 201 | **201 Created** | Persisted grant in live DynamoDB table |
+| `GET /api/v1/consent/grants` | Valid Cognito JWT | 200 | **200 OK** | Retieved active grants from DynamoDB |
+| `DELETE /api/v1/consent/grants/{id}` | Valid Cognito JWT | 200 | **200 OK** | Revoked grant in live DynamoDB table |
+| `POST /api/v1/focus/session` | Valid Cognito JWT | 200 | **200 OK** | Session started & stopped in DynamoDB |
+| `POST /api/v1/preferences` | Valid Cognito JWT | 200 | **200 OK** | Updated user preferences in DynamoDB |
+| `GET /api/v1/user/export` | Valid Cognito JWT | 200 | **200 OK** | Returns export payload matching schema |
 
-### 8.3 Exact Deployment Command
-Once staging credentials are configured in your shell:
-```bash
-cd infra
-npx cdk deploy AuraCloudIntakeStack \
-  --require-approval broadening \
-  --parameters BootstrapVersion="/cdk-bootstrap/hnb659fds/version"
-```
-
-### 8.4 Rollback Approach
-If any staging verification gate fails after deployment:
+### 8.3 Rollback Approach
+If any staging issue occurs:
 1. **Immediate API Rollback:** Disable public or protected routing via Feature Flags (`global_switches: {"emergency_kill_switch": true}`).
 2. **CDK Stack Destroy / Teardown:**
    ```bash

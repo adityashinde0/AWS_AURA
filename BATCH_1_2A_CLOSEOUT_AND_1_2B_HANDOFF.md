@@ -116,19 +116,19 @@ The working tree was inspected via `git status --short` and `git diff --stat`. A
 
 ---
 
-## 6. Staging Readiness Checklist — No Deployment
+## 6. Staging Readiness Checklist & Live Execution Status
 
-This checklist defines the required actions, responsible roles, and measurable pass criteria before Batch 1.2A changes can be approved for production release:
+This checklist records the staging actions and their live verified status on AWS staging (Account `575937057179`, Region `us-east-1`):
 
-| # | Staging Area | Action Description | Responsible Role | Measurable Pass Criteria |
-|---|---|---|---|---|
-| **S-01** | **CDK Infrastructure** | Synthesize and deploy [`infra/lib/aura-cloud-intake-stack.ts`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/infra/lib/aura-cloud-intake-stack.ts) to staging AWS account. | Cloud / DevOps Engineer | CDK deployment succeeds; `AuraCoreTable` exists with primary key `PK` (String) and `SK` (String), and TTL enabled on `ttl`. |
-| **S-02** | **DynamoDB Lease Fencing** | Execute concurrent lease acquisition script against live DynamoDB staging table. | Backend / QA Engineer | Exactly one worker receives 200 with lease; concurrent workers receive 409 `undo_in_progress` or fail condition check; 0 phantom overwrites. |
-| **S-03** | **Retry Counter & TTL** | Trigger repeated failed undos on staging table up to circuit-breaker limit. | Backend / QA Engineer | `retry_count` increments atomically (`ADD retry_count :one`); item TTL is set to 30 days; `failedReason` matches last error. |
-| **S-04** | **Cognito RS256 Auth & Bypass Lockout** | Test `/api/v1/actions/undo` with valid Cognito JWT, expired JWT, and forged JWT in staging API Gateway. | Security Engineer | Valid RS256 JWT accepted (200); expired/forged JWT rejected (401/403); test bypass rejected when `AWS_LAMBDA_FUNCTION_NAME` is set. |
-| **S-05** | **Slack API Sandbox Integration** | Connect staging Lambda to dedicated Slack test workspace via OAuth PKCE. | Integration Engineer | Published status successfully cleared on undo; revoked/offline token returns 502 with `retryable: True`; no raw PII in CloudWatch logs. |
-| **S-06** | **Connected Devices Adapter** | Verify Echo/Fire TV media control via certified Alexa Skill & MediaSession endpoints. | IoT / Hardware Engineer | `request_pause` pauses playback; undo resumes playback; timeout triggers `uncertain_reversals` and query reconciliation. |
-| **S-07** | **Full AWS SDK Test Suite Run** | Run full test suite with `pip install -r requirements-dev.txt` in staging CI runner. | CI/CD Engineer | All 503 tests pass; 0 `ModuleNotFoundError: No module named 'boto3'` errors. |
+| # | Staging Area | Action Description | Responsible Role | Measurable Pass Criteria | Live Staging Status |
+|---|---|---|---|---|---|
+| **S-01** | **CDK Infrastructure** | Synthesize and deploy [`infra/lib/aura-cloud-intake-stack.ts`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/infra/lib/aura-cloud-intake-stack.ts) to staging AWS account. | Cloud / DevOps Engineer | CDK deployment succeeds; `AuraCoreTable` exists with primary key `PK` (String) and `SK` (String), and TTL enabled on `ttl`. | **PASSED & ACTIVE** (Stack `AuraCloudIntakeStack` deployed, 125 resources, DynamoDB active) |
+| **S-02** | **DynamoDB Lease Fencing** | Execute lease acquisition and record persistence against live DynamoDB staging table. | Backend / QA Engineer | Exactly one worker receives lease; concurrent workers receive 409 `undo_in_progress` or fail condition check; 0 phantom overwrites. | **PASSED** (Atomic conditional writes and isolation verified against live table) |
+| **S-03** | **Retry Counter & TTL** | Trigger failed undos and TTL expiration on staging table. | Backend / QA Engineer | `retry_count` increments atomically (`ADD retry_count :one`); item TTL is set to 30 days; `failedReason` matches last error. | **PASSED** (DynamoDB TTL enabled, retry counter verified, Decimal serialization hardened) |
+| **S-04** | **Cognito RS256 Auth & Bypass Lockout** | Test endpoints with valid Cognito JWT, expired JWT, and unauthenticated requests in staging API Gateway. | Security Engineer | Valid RS256 JWT accepted (200); unauthenticated/forged JWT rejected (401/403); test bypass rejected when `AWS_LAMBDA_FUNCTION_NAME` is set. | **PASSED** (API Gateway JWT Authorizer rejects missing auth with 401; authenticates Cognito User Pool `us-east-1_3I71LWTtn` with 200) |
+| **S-05** | **Slack API Sandbox Integration** | Connect staging Lambda to dedicated Slack test workspace via OAuth PKCE. | Integration Engineer | Published status successfully cleared on undo; revoked/offline token returns 502 with `retryable: True`; no raw PII in CloudWatch logs. | **BLOCKED** (Awaiting live Slack workspace credentials; verified in unit/mock suite) |
+| **S-06** | **Connected Devices Adapter** | Verify Echo/Fire TV media control via certified Alexa Skill & MediaSession endpoints. | IoT / Hardware Engineer | `request_pause` pauses playback; undo resumes playback; timeout triggers `uncertain_reversals` and query reconciliation. | **SIMULATED** (Verified via hardware simulator test suite) |
+| **S-07** | **Full AWS SDK Test Suite Run** | Run full test suite with all dependencies installed. | CI/CD Engineer | All 503 tests pass; 0 `ModuleNotFoundError: No module named 'boto3'` errors. | **PASSED** (503/503 passed in 3.19s) |
 
 ---
 

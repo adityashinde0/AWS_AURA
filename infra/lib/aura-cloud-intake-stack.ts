@@ -1,4 +1,5 @@
 import * as path from 'path';
+import * as fs from 'fs';
 import * as cdk from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import {
@@ -125,6 +126,17 @@ export class AuraCloudIntakeStack extends cdk.Stack {
     // 5. Lambda Functions (Cloud Intake Handlers)
     // =========================================================================
     const lambdaDir = path.resolve(__dirname, '../../lambda');
+    const layerDir = path.resolve(__dirname, '../.build/layer');
+    const layers: lambda.ILayerVersion[] = [];
+    if (fs.existsSync(path.join(layerDir, 'python'))) {
+      const commonLayer = new lambda.LayerVersion(this, 'AuraCommonLayer', {
+        layerVersionName: 'aura-common-dependencies',
+        code: lambda.Code.fromAsset(layerDir),
+        compatibleRuntimes: [lambda.Runtime.PYTHON_3_11],
+        description: 'Project AURA shared dependencies and standalone_agent',
+      });
+      layers.push(commonLayer);
+    }
 
     // 5a. Focus Guardian Lambda
     this.focusGuardianFunction = new lambda.Function(this, 'FocusGuardianFunction', {
@@ -132,6 +144,7 @@ export class AuraCloudIntakeStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'focus_guardian.lambda_handler',
       code: lambda.Code.fromAsset(lambdaDir),
+      layers: layers,
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
       environment: {
@@ -151,6 +164,7 @@ export class AuraCloudIntakeStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'websocket_handler.lambda_handler',
       code: lambda.Code.fromAsset(lambdaDir),
+      layers: layers,
       timeout: cdk.Duration.seconds(5),
       environment: {
         AURA_CONNECTIONS_TABLE: this.wsConnectionsTable.tableName,
@@ -163,6 +177,7 @@ export class AuraCloudIntakeStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'websocket_handler.lambda_handler',
       code: lambda.Code.fromAsset(lambdaDir),
+      layers: layers,
       timeout: cdk.Duration.seconds(5),
       environment: {
         AURA_EVENT_BUS: this.eventBus.eventBusName,
@@ -175,6 +190,7 @@ export class AuraCloudIntakeStack extends cdk.Stack {
       runtime: lambda.Runtime.PYTHON_3_11,
       handler: 'control_plane.lambda_handler',
       code: lambda.Code.fromAsset(lambdaDir),
+      layers: layers,
       timeout: cdk.Duration.seconds(10),
       memorySize: 256,
       environment: {
@@ -306,6 +322,7 @@ export class AuraCloudIntakeStack extends cdk.Stack {
       generateSecret: false,
       authFlows: {
         userSrp: true,
+        adminUserPassword: true,
       },
     });
 
