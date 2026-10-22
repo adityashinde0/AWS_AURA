@@ -12,7 +12,16 @@
 **Live Production Web Showcase:** [awsaura-frontend.vercel.app](https://awsaura-frontend.vercel.app/)  
 **Interactive 3D Orbit & Simulator:** [awsaura-frontend.vercel.app/simulator](https://awsaura-frontend.vercel.app/simulator)  
 **Official Concept & Hardware Video Teaser:** [YouTube Video](https://youtu.be/TGYBgcJrPzw)  
-**Verification Status:** 517 Automated Tests Passing (100% Pass Rate) • Live AWS Staging Verified  
+**Verification Status:** 517 Automated Tests Passing (100% Pass Rate) • Live AWS Staging Verified • [Backend CI Active](https://github.com/adityashinde0/AWS_AURA/actions)  
+
+---
+
+> [!TIP]
+> ### ⏱️ Hackathon Judge's 3-Minute Fast-Track
+> 1. **Experience the Live Web Simulator:** Navigate to [awsaura-frontend.vercel.app/simulator](https://awsaura-frontend.vercel.app/simulator) and click **"✨ Auto-Play Judge Showcase"** to watch the full cycle (T-5 prep, Amazon Fire TV/Alexa silencing, and 1-tap Undo) in under 30 seconds.
+> 2. **Probe the Live AWS Cloud API:** Query our live API Gateway health endpoint directly in your browser: [`https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health`](https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health) (returns `{"status":"healthy","service":"aura-control-plane"}`).
+> 3. **Verify the Anti-Hallucination Guardrail:** Review [`lambda/focus_guardian.py#L376-L386`](../lambda/focus_guardian.py) to inspect the deterministic subset check that prevents hallucinated evidence citations.
+> 4. **Check Continuous Test Verification:** Review our [GitHub Actions Backend CI](https://github.com/adityashinde0/AWS_AURA/actions) running all 517 unit and contract tests on every commit.
 
 ---
 

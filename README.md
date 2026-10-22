@@ -5,7 +5,6 @@
 <img src="frontend/assets/aura-logo.png" alt="Project AURA" width="260" />
 
 <br/><br/>
-
 [![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock_Claude_3.5_Sonnet-FF9900?logo=amazon-aws&logoColor=white)](https://aws.amazon.com/bedrock/)
 [![AWS Live Backend](https://img.shields.io/badge/AWS_Live_Backend-Deployed_%26_Healthy-FF9900?logo=amazon-aws&logoColor=white)](https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health)
 [![AWS Cloud Architecture](https://img.shields.io/badge/AWS_Cloud-11_Enterprise_Services-232F3E?logo=amazon-aws&logoColor=white)](#-aws-cloud-architecture-11-enterprise-services)
@@ -47,9 +46,9 @@
 ---
 
 > [!TIP]
-> ### ⏱️ Hackathon Judge's 3-Minute Fast-Track
+> ### ⏱️ 3-Minute Architectural Fast-Track
 > If you have only 3 minutes to evaluate Project AURA, follow this sequence:
-> 1. **Try the Live Simulator (60s Tour):** Open [awsaura-frontend.vercel.app/simulator](https://awsaura-frontend.vercel.app/simulator) and click **"✨ Auto-Play Judge Showcase"** to see Bedrock Claude 3.5 Sonnet pre-meeting prep, ambient Fire TV/Alexa silencing, and 1-tap cryptographic Undo in real time.
+> 1. **Try the Live Simulator (60s Guided Tour):** Open [awsaura-frontend.vercel.app/simulator](https://awsaura-frontend.vercel.app/simulator) and click the **Auto-Play Tour** button to see Bedrock Claude 3.5 Sonnet pre-meeting prep, ambient Fire TV/Alexa silencing, and 1-tap cryptographic Undo in real time.
 > 2. **Verify Live AWS Cloud Infrastructure:** Test our live deployed AWS HTTP Gateway health probe: [`https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health`](https://trujdwjp17.execute-api.us-east-1.amazonaws.com/api/v1/health) (returns `{"status":"healthy","service":"aura-control-plane"}`).
 > 3. **Inspect the Zero-Surveillance Safety Invariant:** Check [`lambda/focus_guardian.py#L376-L386`](lambda/focus_guardian.py) for mathematical anti-hallucination guard (`proposed_ids.issubset(allowed_ids)`) and [`standalone_agent/policy_engine.py`](standalone_agent/policy_engine.py) for the policy execution gate.
 > 4. **Review Continuous Verification:** Check the [Backend CI Actions](https://github.com/adityashinde0/AWS_AURA/actions) running 517 automated unit and contract tests on every commit with 100% pass rate.

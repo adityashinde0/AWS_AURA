@@ -111,6 +111,32 @@
               </button>
             </div>
           </div>
+
+          <!-- Judge Auto-Play Tour Button -->
+          <div class="toolbar-group judge-tour-group">
+            <button type="button" class="btn-judge-autoplay" id="btn-judge-autoplay" title="Execute 30-Second Guided Judge Tour">
+              <span class="autoplay-pulse-icon" aria-hidden="true">▶</span>
+              <span class="autoplay-text">✨ Auto-Play Judge Showcase (30s)</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Guided Judge Tour Status Banner -->
+        <div class="judge-tour-banner" id="judge-tour-banner" style="display: none;" role="status" aria-live="polite">
+          <div class="tour-banner-content">
+            <div class="tour-step-badge" id="tour-step-badge">TOUR · STEP 1 OF 4</div>
+            <div class="tour-step-info">
+              <h4 class="tour-step-title" id="tour-step-title">T-5 Meeting Prep (Claude 3.5 Sonnet)</h4>
+              <p class="tour-step-desc" id="tour-step-desc">Orchestrates context 5 minutes ahead of meetings. Bedrock generates 3 concise, grounded questions with zero cloud audio storage.</p>
+            </div>
+            <div class="tour-progress-bar-container">
+              <div class="tour-progress-fill" id="tour-progress-fill"></div>
+            </div>
+            <div class="tour-controls">
+              <button type="button" class="tour-btn-pause" id="tour-btn-pause" aria-label="Pause or Resume Tour">⏸ Pause</button>
+              <button type="button" class="tour-btn-close" id="tour-btn-close" aria-label="Exit Tour">✕ Exit</button>
+            </div>
+          </div>
         </div>
       </section>
 

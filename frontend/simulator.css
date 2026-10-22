@@ -1716,74 +1716,434 @@ body {
 }
 
 /* ==========================================================================
-   Mobile Responsive Adjustments for Simulator
+   JUDGE AUTO-PLAY SHOWCASE & GUIDED TOUR STYLES
    ========================================================================== */
+.btn-judge-autoplay {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, #FFCF00 0%, #f59e0b 100%);
+  color: #090c13;
+  font-weight: 800;
+  font-size: 0.84rem;
+  padding: 10px 20px;
+  border-radius: var(--sim-radius-pill);
+  border: 1px solid rgba(255, 207, 0, 0.6);
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 4px 18px rgba(245, 158, 11, 0.35);
+  user-select: none;
+}
+
+.btn-judge-autoplay:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(245, 158, 11, 0.55);
+  filter: brightness(1.08);
+}
+
+.btn-judge-autoplay:active {
+  transform: translateY(0);
+}
+
+.btn-judge-autoplay.running {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: #ffffff;
+  border-color: rgba(16, 185, 129, 0.6);
+  box-shadow: 0 4px 18px rgba(16, 185, 129, 0.45);
+}
+
+.autoplay-pulse-icon {
+  font-size: 0.85rem;
+  display: inline-block;
+  animation: pulseIcon 1.8s infinite ease-in-out;
+}
+
+@keyframes pulseIcon {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.3); opacity: 0.75; }
+}
+
+/* Guided Judge Tour Status Banner */
+.judge-tour-banner {
+  background: rgba(20, 25, 43, 0.95);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: var(--sim-radius-md);
+  padding: 16px 22px;
+  margin-bottom: 28px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  animation: slideDownBanner 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+[data-theme="light"] .judge-tour-banner {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(245, 158, 11, 0.55);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+}
+
+@keyframes slideDownBanner {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.tour-banner-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tour-step-badge {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  border-radius: var(--sim-radius-pill);
+}
+
+.tour-step-title {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--sim-text-primary);
+  margin-bottom: 2px;
+}
+
+.tour-step-desc {
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: var(--sim-text-secondary);
+}
+
+.tour-progress-bar-container {
+  width: 100%;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.tour-progress-fill {
+  height: 100%;
+  width: 25%;
+  background: linear-gradient(90deg, #FFCF00, #f59e0b);
+  border-radius: 4px;
+  transition: width 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tour-controls {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.tour-btn-pause,
+.tour-btn-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: var(--sim-radius-sm);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.tour-btn-pause {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--sim-border);
+  color: var(--sim-text-primary);
+}
+
+.tour-btn-pause:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.tour-btn-close {
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}
+
+.tour-btn-close:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+
+/* ==========================================================================
+   COMPREHENSIVE MOBILE RESPONSIVE OVERHAUL (SMARTPHONES & TABLETS)
+   ========================================================================== */
+@media (max-width: 1100px) {
+  .sim-stage-main-grid {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+}
+
 @media (max-width: 768px) {
+  /* Header & Navigation */
   .sim-nav-wrapper {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding: 10px 14px;
     gap: 12px;
-    padding: 0 16px;
+  }
+
+  .sim-nav-wrapper::-webkit-scrollbar {
+    display: none;
+  }
+
+  .sim-brand {
+    flex-shrink: 0;
+  }
+
+  .sim-brand-title {
+    font-size: 1.15rem;
   }
 
   .sim-nav-links {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
     gap: 6px;
-    width: 100%;
-    justify-content: flex-start;
+    flex-shrink: 0;
+  }
+
+  .sim-nav-links::-webkit-scrollbar {
+    display: none;
   }
 
   .sim-nav-link {
     font-size: 0.78rem;
-    padding: 5px 8px;
+    padding: 6px 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
-  .btn-nav-outline {
-    font-size: 0.75rem;
-    padding: 5px 8px;
-  }
-
+  .btn-nav-outline,
   .theme-pill-btn {
-    font-size: 0.75rem;
-    padding: 5px 8px;
+    font-size: 0.76rem;
+    padding: 6px 10px;
+    white-space: nowrap;
+    flex-shrink: 0;
   }
 
+  /* Hero Section */
+  .sim-hero-section {
+    padding: 32px 0 20px;
+  }
+
+  .sim-hero-headline {
+    font-size: clamp(1.6rem, 6vw, 2.3rem);
+    line-height: 1.18;
+  }
+
+  .sim-hero-sub {
+    font-size: 0.92rem;
+    line-height: 1.5;
+    margin-bottom: 20px;
+  }
+
+  /* Master Controls Toolbar */
+  .sim-master-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: 14px;
+    gap: 14px;
+    border-radius: var(--sim-radius-md);
+  }
+
+  .toolbar-group {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .toolbar-label {
+    font-size: 0.7rem;
+  }
+
+  .device-toggle-pills {
+    display: flex;
+    width: 100%;
+  }
+
+  .device-pill {
+    flex: 1;
+    justify-content: center;
+    padding: 8px 12px;
+    font-size: 0.8rem;
+  }
+
+  .scenario-tabs-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    width: 100%;
+  }
+
+  .scenario-tab-btn {
+    padding: 9px 10px;
+    font-size: 0.78rem;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .judge-tour-group {
+    width: 100%;
+  }
+
+  .btn-judge-autoplay {
+    width: 100%;
+    justify-content: center;
+    padding: 12px 16px;
+    font-size: 0.86rem;
+  }
+
+  /* Watch Chassis & Stage Centering */
   .watch-viewport-stage {
     padding: 24px 12px 18px;
+    border-radius: var(--sim-radius-lg);
   }
 
   .orbit-pebble-frame {
-    max-width: 100%;
-    width: 100%;
-    max-width: 330px;
-    height: auto;
-    aspect-ratio: 350 / 480;
-    padding: 16px;
+    width: 100% !important;
+    max-width: min(320px, calc(100vw - 44px)) !important;
+    height: auto !important;
+    aspect-ratio: 350 / 480 !important;
+    padding: 16px 12px !important;
+    border-radius: 54px !important;
+  }
+
+  .orbit-bezel-enclosure {
+    width: 100% !important;
+    max-width: 252px !important;
+    height: auto !important;
+    aspect-ratio: 276 / 380 !important;
+    border-radius: 42px !important;
   }
 
   .apple-watch-frame {
-    max-width: 100%;
+    width: 100% !important;
+    max-width: min(310px, calc(100vw - 44px)) !important;
+    height: auto !important;
+    aspect-ratio: 310 / 460 !important;
+    padding: 16px 12px !important;
+    border-radius: 46px !important;
+  }
+
+  .apple-oled-bezel {
+    width: 100% !important;
+    max-width: 252px !important;
+    height: auto !important;
+    aspect-ratio: 270 / 370 !important;
+    border-radius: 38px !important;
+  }
+
+  /* Test Cases Cockpit */
+  .test-cases-suite-card {
+    padding: 18px 14px;
+    border-radius: var(--sim-radius-md);
+  }
+
+  .suite-header-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+  }
+
+  .btn-run-all-tests {
     width: 100%;
-    max-width: 320px;
-    height: auto;
-    aspect-ratio: 310 / 460;
-    padding: 16px;
+    justify-content: center;
+    padding: 11px;
   }
 
-  .controls-cockpit {
-    padding: 20px 14px;
+  .test-cases-grid {
+    gap: 10px;
   }
 
-  .sim-test-controls-grid {
-    grid-template-columns: 1fr;
+  .test-case-item {
+    padding: 12px 14px;
+  }
+
+  .tc-name {
+    font-size: 0.86rem;
+  }
+
+  .tc-assertion-desc {
+    font-size: 0.74rem;
+  }
+
+  .tc-actions-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .btn-run-tc {
+    width: 100%;
+    text-align: center;
+    padding: 8px;
+  }
+
+  /* Telemetry Console & Logs */
+  .telemetry-console-card {
+    padding: 18px 14px;
+    border-radius: var(--sim-radius-md);
+  }
+
+  .wire-stream-box {
+    max-height: 280px;
+    padding: 10px;
+  }
+
+  .wire-entry-block {
+    word-break: break-word;
+    overflow-x: auto;
   }
 }
 
 @media (max-width: 480px) {
+  .sim-container {
+    padding: 0 14px;
+  }
+
   .sim-brand-badge {
     display: none;
   }
 
-  .sim-hero-headline {
-    font-size: 1.8rem;
+  .sim-arch-pill {
+    font-size: 0.68rem;
+    padding: 4px 12px;
+  }
+
+  .stage-instruction-pill {
+    font-size: 0.76rem;
+    padding: 8px 12px;
+  }
+
+  .stage-mode-label {
+    font-size: 0.7rem;
+  }
+
+  .tour-step-title {
+    font-size: 1.02rem;
+  }
+
+  .tour-step-desc {
+    font-size: 0.8rem;
   }
 }
