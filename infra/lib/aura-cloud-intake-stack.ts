@@ -631,6 +631,11 @@ export class AuraCloudIntakeStack extends cdk.Stack {
 
     // =========================================================================
     // 9. AWS WAF Web Application Firewall
+    // NOTE: Amazon API Gateway v2 (HTTP APIs) does not natively support direct
+    // regional CfnWebACLAssociation. Direct WAF association is supported natively
+    // for API Gateway v1 REST APIs or via an Amazon CloudFront distribution fronting
+    // the HTTP API. This regional WebACL defines the baseline managed rule set
+    // (CommonRuleSet, KnownBadInputs, 500 req/5min rate limit) ready for CloudFront/ALB.
     // =========================================================================
     this.webAcl = new wafv2.CfnWebACL(this, 'AuraWebAcl', {
       name: 'AuraCloudIntakeWebAcl',
@@ -717,6 +722,11 @@ export class AuraCloudIntakeStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'EventBusArnOutput', {
       value: this.eventBus.eventBusArn,
       exportName: 'AuraEventBusArn',
+    });
+
+    new cdk.CfnOutput(this, 'WebAclArnOutput', {
+      value: this.webAcl.attrArn,
+      exportName: 'AuraWebAclArn',
     });
   }
 }

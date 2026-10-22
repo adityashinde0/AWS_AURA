@@ -232,7 +232,7 @@ curl -s -X POST "${HTTP_API_URL}/api/v1/actions/undo" \
 | **GATE-03** | **Cognito Auth** | RS256 token verification enforced; test bypass rejected in Lambda environment. | **COMPLETE** (Verified in `test_auth_enforcement.py` & `test_security_batch1_2a.py`) | **COMPLETE** (Cognito User Pool `us-east-1_3I71LWTtn` issued RS256 ID tokens; API Gateway rejected unauthorized requests with 401; accepted valid RS256 token and authenticated user `0448b4a8-30b1-70f5-7f7c-bd4c15719918`) |
 | **GATE-04** | **Slack Integration** | OAuth PKCE token exchange stored in Secrets Manager; status published and cleared. | **COMPLETE** (Verified in `test_slack_adapter.py`) | **BLOCKED** (Awaiting live Slack workspace & Secrets Manager OAuth credentials) |
 | **GATE-05** | **Reconciliation** | Blind retries blocked after ambiguous timeout; authoritative state query checked. | **COMPLETE** (Verified in `test_partial_undo_recovery.py` & `test_security_batch1_2a.py`) | **SIMULATED** (Verified via simulator in unit test suite and API Gateway 404/502 handling) |
-| **GATE-06** | **Test Suite** | Full test suite passes against environment. | **COMPLETE** (503/503 Passed in 3.08s) | **COMPLETE** (All 503 tests pass; live API Gateway endpoints validated) |
+| **GATE-06** | **Test Suite** | Full test suite passes against environment. | **COMPLETE** (517/517 Passed in 9.13s) | **COMPLETE** (All 517 unit, security, and contract tests pass; live API Gateway endpoints validated) |
 
 ---
 
@@ -249,25 +249,36 @@ curl -s -X POST "${HTTP_API_URL}/api/v1/actions/undo" \
 - **Cognito User Pool ID:** `us-east-1_3I71LWTtn` (Client ID: `1vo8g72c1e2g39mf2mjdgo667m`)
 - **DynamoDB Core Table:** `AuraCoreTable` (Status: `ACTIVE`, KMS Encrypted, PITR Enabled, TTL Enabled)
 - **AWS WAFv2 WebACL:** `AuraCloudIntakeWebAcl` (Common Rule Set, Known Bad Inputs, Rate Limit 500 req/5min)
+  - *Architecture Note:* Amazon API Gateway v2 (HTTP APIs) does not natively support direct regional `CfnWebACLAssociation`. Direct WAF association is supported natively for API Gateway v1 REST APIs or via an Amazon CloudFront distribution fronting the HTTP API. The synthesized `AuraCloudIntakeWebAcl` regional WebACL is ready for CloudFront or ALB association.
 
 ### 8.2 Live API Endpoint Validation Results
 | Method & Path | Authorization | Expected | Actual Status | Live Outcome |
 |---|---|---|---|---|
 | `GET /health` | None (Public) | 200 | **200 OK** | `{"status": "healthy", "service": "aura-control-plane"}` |
 | `GET /api/v1/health` | None (Public) | 200 | **200 OK** | `{"status": "healthy", "service": "aura-control-plane"}` |
-| `GET /api/v1/devices` | None (Public) | 200 | **200 OK** | Returns available device list |
+| `GET /api/v1/devices` | None (Public) | 200 | **200 OK** | Returns available device list (zero secrets/PII leaked) |
 | `GET /api/v1/feature-flags` | None (Public) | 200 | **200 OK** | Returns global feature flag switches |
 | `GET /api/v1/focus/bank` | Missing Auth | 401 | **401 Unauthorized** | Correctly blocked by Cognito Authorizer |
 | `POST /api/v1/actions/undo` | Missing Auth | 401 | **401 Unauthorized** | Correctly blocked by Cognito Authorizer |
 | `GET /api/v1/focus/bank` | Valid Cognito JWT | 200 | **200 OK** | Returns user-isolated focus bank balance |
 | `POST /api/v1/consent/grants` | Valid Cognito JWT | 201 | **201 Created** | Persisted grant in live DynamoDB table |
-| `GET /api/v1/consent/grants` | Valid Cognito JWT | 200 | **200 OK** | Retieved active grants from DynamoDB |
+| `GET /api/v1/consent/grants` | Valid Cognito JWT | 200 | **200 OK** | Retrieved active grants from DynamoDB |
 | `DELETE /api/v1/consent/grants/{id}` | Valid Cognito JWT | 200 | **200 OK** | Revoked grant in live DynamoDB table |
 | `POST /api/v1/focus/session` | Valid Cognito JWT | 200 | **200 OK** | Session started & stopped in DynamoDB |
 | `POST /api/v1/preferences` | Valid Cognito JWT | 200 | **200 OK** | Updated user preferences in DynamoDB |
 | `GET /api/v1/user/export` | Valid Cognito JWT | 200 | **200 OK** | Returns export payload matching schema |
 
-### 8.3 Rollback Approach
+### 8.3 Security Hardening & Compromised Credential Assessment
+- **Cognito Staging User (`staging-tester`):**
+  - Username: `staging-tester` (Sub: `0448b4a8-30b1-70f5-7f7c-bd4c15719918`)
+  - Status: Evaluated as compromised due to exposure during earlier terminal interaction.
+  - Recommendation: Disable user via `aws cognito-idp admin-disable-user --user-pool-id us-east-1_3I71LWTtn --username staging-tester` (blocks sign-in immediately; preserves DynamoDB audit logs; zero impact on the 517 automated tests).
+- **HTTP API Device Discovery:**
+  - Audited `GET /api/v1/devices`: Verified returns only static hardware catalog; zero private keys, secret ARNs, or user devices disclosed.
+- **Decimal Serialization Hardening:**
+  - Enhanced `_dynamo_serialize`, `_dynamo_deserialize`, and `_json_resp` in `lambda/control_plane.py` to handle nested dictionaries, lists, tuples, sets, and Decimals safely.
+
+### 8.4 Rollback Approach
 If any staging issue occurs:
 1. **Immediate API Rollback:** Disable public or protected routing via Feature Flags (`global_switches: {"emergency_kill_switch": true}`).
 2. **CDK Stack Destroy / Teardown:**

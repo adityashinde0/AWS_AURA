@@ -69,8 +69,10 @@ def _dynamo_serialize(obj: Any) -> Any:
         return int(obj)
     if isinstance(obj, dict):
         return {k: _dynamo_serialize(v) for k, v in obj.items()}
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [_dynamo_serialize(v) for v in obj]
+    if isinstance(obj, set):
+        return [_dynamo_serialize(v) for v in sorted(list(obj))]
     return obj
 
 
@@ -904,6 +906,13 @@ default_store = InMemoryDataStore()
 
 
 def _json_resp(status: int, data: dict[str, Any]) -> dict[str, Any]:
+    def _default(o: Any) -> Any:
+        if isinstance(o, Decimal):
+            return int(o) if o % 1 == 0 else float(o)
+        if isinstance(o, set):
+            return sorted(list(o))
+        return str(o)
+
     return {
         "statusCode": status,
         "headers": {
@@ -912,10 +921,7 @@ def _json_resp(status: int, data: dict[str, Any]) -> dict[str, Any]:
             "access-control-allow-methods": "GET,POST,DELETE,OPTIONS",
             "access-control-allow-headers": "Content-Type,Authorization",
         },
-        "body": json.dumps(
-            data,
-            default=lambda o: int(o) if isinstance(o, Decimal) and o % 1 == 0 else (float(o) if isinstance(o, Decimal) else str(o))
-        ),
+        "body": json.dumps(data, default=_default),
     }
 
 
