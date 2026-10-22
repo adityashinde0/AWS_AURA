@@ -36,7 +36,7 @@ public final class AuraApiService: ObservableObject {
     public static let shared = AuraApiService()
     private let baseURL: URL
 
-    public init(baseURL: URL = URL(string: "https://api.aura.internal")!) {
+    public init(baseURL: URL = URL(string: "https://trujdwjp17.execute-api.us-east-1.amazonaws.com")!) {
         self.baseURL = baseURL
     }
 
