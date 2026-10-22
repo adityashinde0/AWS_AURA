@@ -27,7 +27,7 @@ python3 -m pytest --ignore=tests/e2e/test_pre_meeting_e2e.py \
 
 ## Known broken tests (pre-existing, not your fault)
 
-`test_pre_meeting_e2e.py`, `test_bedrock_adapter.py`, and `test_calendar_adapter.py` fail at **collection** with `ModuleNotFoundError: No module named 'boto3'`. This is an environment constraint, not a code bug. The other 160+ tests pass without boto3.
+`test_pre_meeting_e2e.py`, `test_bedrock_adapter.py`, and `test_calendar_adapter.py` fail at **collection** with `ModuleNotFoundError: No module named 'boto3'` in environments lacking the AWS SDK. This is an environment constraint, not a code bug. The other 508 tests pass without boto3 (and all 517 tests pass when boto3 and botocore are installed).
 
 ## Lambda module imports
 

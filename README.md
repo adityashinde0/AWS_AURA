@@ -222,7 +222,7 @@ Project AURA is engineered to satisfy all five core pillars of the **AWS Well-Ar
   │     COST OPTIMIZATION     │     OPERATIONAL EXCELLENCE    │
   │  • Pay-per-Request Dynamo │  • Structured JSON Logging    │
   │  • 30-Day Automated TTL   │  • CloudWatch Insights Tracing│
-  │  • Serverless Scale-to-0  │  • 503 Automated Tests (100%) │
+  │  • Serverless Scale-to-0  │  • 517 Automated Tests (100%) │
   └───────────────────────────┴───────────────────────────────┘
 ```
 
@@ -230,7 +230,7 @@ Project AURA is engineered to satisfy all five core pillars of the **AWS Well-Ar
 2. **Reliability:** Multi-LLM failover (Bedrock + Watsonx), SQS Dead Letter Queues, DynamoDB Point-in-Time Recovery, deterministic circuit breaking.
 3. **Performance Efficiency:** Graviton ARM64 compute, sub-50ms WebSocket telemetry streaming, HTTP/2 Apple push dispatch, 420ms failover inference.
 4. **Cost Optimization:** 100% serverless scale-to-zero compute, DynamoDB On-Demand billing, automated 30-day TTL data retirement.
-5. **Operational Excellence:** Structured JSON logging, cross-service correlation IDs, automated CDK v2 synthesis, and 503 automated contract/unit tests (100% passing across the complete test suite).
+5. **Operational Excellence:** Structured JSON logging, cross-service correlation IDs, automated CDK v2 synthesis, and 517 automated contract/unit/e2e tests (100% passing across the complete test suite).
 
 ---
 
@@ -469,7 +469,8 @@ AURA/
 ├── standalone_agent/           # Edge Companion & Policy Engine (Python)
 │   ├── policy_engine.py        # Sole deterministic execution gatekeeper
 │   ├── redactor.py             # Client-side PII scrubber & anonymizer
-│   ├── resilience_gateway.py   # Multi-LLM failover circuit breaker
+│   ├── device_adapter.py       # Smart home transport & media pause adapter
+│   ├── slack_adapter.py        # Enterprise Slack ambient focus status adapter
 │   └── sms_adapter.py          # Emergency SMS alert dispatcher
 ├── schemas/                    # JSON Schemas (WebSocket, Pre-Meeting, DynamoDB)
 ├── docs/                       # Technical Specifications, Dossiers & Runbooks
@@ -480,7 +481,7 @@ AURA/
 │   ├── MODERNIZATION_REPORT.md # Production architecture modernization report
 │   ├── RUNBOOKS.md             # Tier-1 & Tier-2 operational recovery runbooks
 │   └── SECURITY_REVIEW_CERTIFICATION.md # Threat models & boundary review
-└── tests/                      # Automated Test Suite (415 Passing Tests | 406 Offline)
+└── tests/                      # Automated Test Suite (517 Passing Tests | 508 Offline)
     ├── contract/               # Contract & schema compliance tests (13 test files)
     ├── unit/                   # Unit tests across handlers, adapters, and policies (38 test files)
     └── e2e/                    # End-to-end integration and lifecycle tests (6 test files)
@@ -493,10 +494,10 @@ AURA/
 The test suite enforces contract validation, Pydantic schemas, cryptographic token validation, and multi-provider failover without requiring live cloud connections:
 
 ```bash
-# 1. Execute the COMPLETE automated test suite (415 passing tests)
+# 1. Execute the COMPLETE automated test suite (517 passing tests)
 py -m pytest
 
-# 2. Execute the OFFLINE / CORE suite (406 passing tests, excluding boto3 collection suites)
+# 2. Execute the OFFLINE / CORE suite (508 passing tests, excluding boto3 collection suites)
 py -m pytest --ignore=tests/e2e/test_pre_meeting_e2e.py \
              --ignore=tests/unit/test_bedrock_adapter.py \
              --ignore=tests/unit/test_calendar_adapter.py
@@ -508,10 +509,10 @@ py -m pytest tests/contract/
 python -m standalone_agent.live_demo --auto
 ```
 
-### Verified Test Suite Reconciliation (503 Tests Passing)
+### Verified Test Suite Reconciliation (517 Tests Passing)
 
-* **Full Test Suite:** **503 Passed**, 0 Failures (100% pass rate in ~7.8s).
-* **Core Unit & Modernization Suite:** **494 Passed**, 0 Failures.
+* **Full Test Suite:** **517 Passed**, 0 Failures (100% pass rate in ~10.7s).
+* **Offline / Core Unit & Contract Suite:** **508 Passed**, 0 Failures.
 * **AWS Integration & SDK Suite:** **9 Passed** (`test_bedrock_adapter.py`, `test_calendar_adapter.py`, `test_pre_meeting_e2e.py`).
 * **Test Suite Expansion & Invariants:**
   - **Durable Undo & Lease Fencing (`tests/unit/test_partial_undo_recovery.py`, 22 tests):** Validates atomic DynamoDB conditional lease acquisition, crash recovery, offline device honest failure handling, and stale-worker fencing.

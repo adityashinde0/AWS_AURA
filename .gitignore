@@ -36,6 +36,7 @@ Thumbs.db
 .coverage.*
 htmlcov/
 *.log
+/test_aws_bedrock.py
 
 # Node and CDK artifacts
 node_modules/

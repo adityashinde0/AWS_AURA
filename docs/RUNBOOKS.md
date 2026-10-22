@@ -85,8 +85,10 @@ This operational handbook provides tier-1 and tier-2 on-call engineers with pres
 - Dynamic 3-question generation and tone inference are unavailable.
 
 ### 1.3 Resolution Steps
-1. **Verify Deterministic Safe Fallback Mode:**
-   AURA’s `BedrockAdapter` automatically catches model exceptions and fails safe to a non-LLM static contract proposal:
+1. **Automated Multi-LLM Resilience Failover (Default Behavior):**
+   Project AURA’s `MultiProviderModelGateway` ([`lambda/resilience_gateway.py`](../lambda/resilience_gateway.py)) automatically enforces wall-clock deadlines (5.0s Bedrock primary timeout, 8.0s secondary deadline). Upon detecting Bedrock timeouts (>5.0s), throttling (HTTP 429), or 5xx server errors, it automatically fails over and routes requests to **IBM Watsonx Granite 3.0** (`granite-3-8b-instruct`) without dropping the request.
+2. **Verify Deterministic Safe Fallback Mode:**
+   If both Bedrock and Watsonx are degraded, AURA automatically fails closed to a deterministic heuristic briefing (<20ms execution budget, zero external AI reliance):
    ```json
    {
      "prep_summary": "Upcoming calendar sync: [Title]. Grounded prep unavailable due to model maintenance.",
@@ -96,8 +98,8 @@ This operational handbook provides tier-1 and tier-2 on-call engineers with pres
      "reason": "Safe deterministic fallback active"
    }
    ```
-2. **Failover to Alternate Model ID:**
-   Switch Bedrock configuration from Claude 3.5 Sonnet to secondary Claude 3 Haiku or Amazon Titan in Lambda environment:
+3. **Manual Failover to Alternate Bedrock Model ID:**
+   Primary deployed model is `anthropic.claude-3-5-sonnet-20241022-v2:0`. If operator intervention is desired to route directly to secondary Claude 3 Haiku:
    ```bash
    aws lambda update-function-configuration \
      --function-name aura-focus-guardian \

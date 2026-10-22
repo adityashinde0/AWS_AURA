@@ -127,7 +127,7 @@ One of Project AURA’s primary architectural achievements is its deterministic 
 
 ### 2. Evidence Hallucination Guardrail Triggered
 - **Condition:** An LLM generates a briefing question citing an evidence ID (e.g. `ev_fabricated_999`) that does not exist in the input request payload.
-- **System Defense ([`lambda/focus_guardian.py#L376-L386`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/focus_guardian.py)):**
+- **System Defense ([`lambda/focus_guardian.py#L376-L386`](../lambda/focus_guardian.py)):**
   ```python
   if not set(proposal.evidence_ids).issubset(set(valid_evidence_ids)):
       _log("WARNING", "evidence_hallucination_detected",
@@ -138,7 +138,7 @@ One of Project AURA’s primary architectural achievements is its deterministic 
 
 ### 3. Primary LLM Outage / Timeout (Multi-LLM Failover)
 - **Condition:** Amazon Bedrock Claude 3.5 Sonnet experiences a 5xx error, network timeout, or rate limiting (HTTP 429).
-- **System Defense ([`lambda/resilience_gateway.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/resilience_gateway.py)):**
+- **System Defense ([`lambda/resilience_gateway.py`](../lambda/resilience_gateway.py)):**
   1. The primary provider attempt reaches its enforced wall-clock timeout (8 seconds).
   2. The circuit breaker trips and logs `resilience_gateway_failover` with `correlation_id`.
   3. Execution immediately routes to **IBM Watsonx (Granite 3.0 8B Instruct)**.
@@ -146,7 +146,7 @@ One of Project AURA’s primary architectural achievements is its deterministic 
 
 ### 4. Duplicate or Expired Undo Token
 - **Condition:** A user double-taps an undo button, or clicks Undo after the 5-minute TTL has expired.
-- **System Defense ([`lambda/control_plane.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/control_plane.py)):**
+- **System Defense ([`lambda/control_plane.py`](../lambda/control_plane.py)):**
   - **Duplicate Tap:** DynamoDB atomic lease check recognizes the action is already `SUCCEEDED` and returns an idempotent `200 OK` with `already_undone: true`.
   - **Expired Token:** If the token has surpassed its TTL, the handler returns `410 Gone` with `error: "undo_token_expired"`.
 
@@ -156,25 +156,25 @@ One of Project AURA’s primary architectural achievements is its deterministic 
 
 Evaluators can verify the entire test suite and inspect contracts on any machine with Python 3.11+:
 
-### 1. Run the Complete Automated Test Suite (402 Tests)
+### 1. Run the Complete Automated Test Suite (517 Tests)
 ```bash
 # Clone the repository
 git clone https://github.com/adityashinde0/AWS_AURA.git
 cd AWS_AURA
 
-# Run all 402 passing unit, contract, and e2e tests
+# Run all 517 passing unit, contract, and e2e tests
 py -m pytest
 ```
-*Expected Output:* `402 passed in ~5.0s (100% pass rate)`
+*Expected Output:* `517 passed in ~10.7s (100% pass rate)`
 
-### 2. Run the Offline / Non-AWS-SDK Test Suite (393 Tests)
+### 2. Run the Offline / Non-AWS-SDK Test Suite (508 Tests)
 In environments where `boto3` is not installed, run with the 3 collection ignores:
 ```bash
 py -m pytest --ignore=tests/e2e/test_pre_meeting_e2e.py \
              --ignore=tests/unit/test_bedrock_adapter.py \
              --ignore=tests/unit/test_calendar_adapter.py
 ```
-*Expected Output:* `393 passed in ~3.3s (100% pass rate)`
+*Expected Output:* `508 passed in ~12.4s (100% pass rate)`
 
 ### 3. Run the Standalone Interactive Live Demo
 ```bash

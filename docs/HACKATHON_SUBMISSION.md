@@ -24,7 +24,7 @@ Modern knowledge workers and engineers suffer from cognitive overload, meeting f
 
 ## 2. Technical Architecture & AWS Cloud Integration
 
-Project AURA's enterprise cloud fabric is defined and deployed via **AWS CDK v2 (TypeScript)** in [`infra/lib/aura-cloud-intake-stack.ts`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/infra/lib/aura-cloud-intake-stack.ts) and orchestrates **11 AWS Services**:
+Project AURA's enterprise cloud fabric is defined and deployed via **AWS CDK v2 (TypeScript)** in [`infra/lib/aura-cloud-intake-stack.ts`](../infra/lib/aura-cloud-intake-stack.ts) and orchestrates **11 AWS Services**:
 
 | AWS Service | Architecture Role | Verification Status |
 |---|---|---|
@@ -53,10 +53,10 @@ AURA features a production-grade dual-tier AI fallback architecture:
 
 ## 4. Multi-Device Ecosystem
 
-* **Aura Orbit (Wearable):** Custom Nordic nRF5340 Dual-Core BLE 5.3 wristband with PMIC nPM1300 power management and ERM haptic feedback drivers ([`firmware/`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/firmware/)).
-* **Apple Watch & iPhone Companion:** Native SwiftUI watchOS 10+ and iOS 17 app with HealthKit HRV stress detection and CoreBluetooth sync ([`apple/`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/apple/)).
-* **Mobile Bridge:** React Native / Expo application orchestrating local sensor telemetry and offline outbox queuing ([`mobile/`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/mobile/)).
-* **Web Simulator & Control Plane:** Interactive Next.js web application for device control, focus session tracking, and real-time simulator state ([`frontend/`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/frontend/)).
+* **Aura Orbit (Wearable):** Custom Nordic nRF5340 Dual-Core BLE 5.3 wristband with PMIC nPM1300 power management and ERM haptic feedback drivers ([`firmware/`](../firmware/)).
+* **Apple Watch & iPhone Companion:** Native SwiftUI watchOS 10+ and iOS 17 app with HealthKit HRV stress detection and CoreBluetooth sync ([`apple/`](../apple/)).
+* **Mobile Bridge:** React Native / Expo application orchestrating local sensor telemetry and offline outbox queuing ([`mobile/`](../mobile/)).
+* **Web Simulator & Control Plane:** Interactive zero-dependency modern vanilla web suite (HTML5, Vanilla CSS, ES6 JavaScript) hosted on Vercel for device control, focus session tracking, and real-time simulator state ([`frontend/`](../frontend/)).
 
 ---
 

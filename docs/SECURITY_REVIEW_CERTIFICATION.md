@@ -56,7 +56,7 @@ Alexa Smart Home capabilities for Echo speakers are governed by the Alexa Skills
 
 ## 4. Multi-Tier Feature Flags & Emergency Kill Switches
 
-To guarantee operational resilience and blast-radius minimization, AURA implements a 3-tier hierarchy ([`feature_flags.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/standalone_agent/feature_flags.py)):
+To guarantee operational resilience and blast-radius minimization, AURA implements a 3-tier hierarchy ([`feature_flags.py`](../standalone_agent/feature_flags.py)):
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -86,7 +86,7 @@ To guarantee operational resilience and blast-radius minimization, AURA implemen
 In compliance with **PRD Section 6 Guardrails**:
 > *"Undo rate > 5% for a policy pauses auto-execution."*
 
-### 5.1 Circuit Breaker Logic ([`undo_guardrail.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/standalone_agent/undo_guardrail.py))
+### 5.1 Circuit Breaker Logic ([`undo_guardrail.py`](../standalone_agent/undo_guardrail.py))
 - **Execution Tracking:** Every executed device action is recorded in `UndoRateGuardrail`.
 - **Undo Tracking:** Every user reversal via `undo_token` increments the undo counter.
 - **Threshold Evaluation:** When sample size $\ge 5$ executions:
@@ -115,20 +115,20 @@ In compliance with **PRD Section 6 Guardrails**:
 
 The Phase 5 security and certification guarantees are verified by automated test suites in continuous integration:
 
-- [`tests/unit/test_adapter_certification.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/tests/unit/test_adapter_certification.py):
+- [`tests/unit/test_adapter_certification.py`](../tests/unit/test_adapter_certification.py):
   - Certified device metadata and Secrets Manager ARN binding validation.
   - Household boundary mismatch blocking tests.
   - Sliding-window command rate limiting enforcement tests.
-- [`tests/unit/test_feature_flags.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/tests/unit/test_feature_flags.py):
+- [`tests/unit/test_feature_flags.py`](../tests/unit/test_feature_flags.py):
   - Global, Tenant, and User tier resolution.
   - Fail-closed kill switch validation.
   - Deterministic cohort rollout tests.
-- [`tests/unit/test_undo_rate_guardrail.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/tests/unit/test_undo_rate_guardrail.py):
+- [`tests/unit/test_undo_rate_guardrail.py`](../tests/unit/test_undo_rate_guardrail.py):
   - Precision tracking of execution vs. undo ratios.
   - >5% threshold automatic circuit breaker trip.
   - Minimum sample size protection against false positives.
   - Circuit breaker reset workflow.
-- [`tests/e2e/test_connected_devices_e2e.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/tests/e2e/test_connected_devices_e2e.py):
+- [`tests/e2e/test_connected_devices_e2e.py`](../tests/e2e/test_connected_devices_e2e.py):
   - End-to-end integration test validating the entire Phase 5 lifecycle across API Gateway, Lambda, Policy Engine, Feature Flags, Device Adapter, and Audit Trail.
 
 ---
@@ -144,7 +144,7 @@ The Phase 5 security and certification guarantees are verified by automated test
 - [x] **Rate Limiting:** Sliding-window command throttling enforced per device.
 - [x] **Credential Hygiene:** AWS Secrets Manager ARN references required; zero plaintext tokens.
 - [x] **Zero Raw Transcripts:** Audit trail and device payloads contain zero raw text or media streams.
-- [x] **Automated Test Suite:** 100% test pass rate across 131 unit, contract, and e2e tests.
+- [x] **Automated Test Suite:** 100% test pass rate across 131 phase-specific tests (and 517 total across the complete repository test suite).
 
 ---
 

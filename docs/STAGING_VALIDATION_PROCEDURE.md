@@ -223,7 +223,7 @@ curl -s -X POST "${HTTP_API_URL}/api/v1/actions/undo" \
 
 > [!IMPORTANT]
 > **Verification Boundary Notice:**
-> Passing all 498 local unit, contract, and mock tests validates code correctness, deterministic logic, and security rules against in-memory models. It does **not** replace live cloud staging execution. Live cloud gates remain pending until credentials are provided and deployment is performed.
+> Passing all 517 local unit, contract, and mock tests validates code correctness, deterministic logic, and security rules against in-memory models. It does **not** replace live cloud staging execution. Live cloud gates remain pending until credentials are provided and deployment is performed.
 
 | Gate ID | Area | Verification Criterion | Local Verification | Live AWS Staging Verification |
 |---|---|---|---|---|
