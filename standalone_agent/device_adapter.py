@@ -867,13 +867,18 @@ class DeviceSimulatorAdapter:
             component_tokens = self.batch_undo_map[undo_token]
             results = [self.execute_undo(tok) for tok in component_tokens]
             all_ok = all(r.get("success", False) for r in results)
-            return UndoResultDict({
+            has_offline = any(r.get("offline") is True or r.get("error") == "device_offline" for r in results)
+            res_dict: dict[str, Any] = {
                 "success": all_ok,
-                "message": f"Batch undo completed for {len(results)} actions",
+                "message": f"Batch undo completed for {len(results)} actions" if all_ok else f"Batch undo failed for {len(results)} actions",
                 "batch_token": undo_token,
                 "reversals": results,
-                "details": {"reversals": results},
-            })
+                "details": {"reversals": results, "offline": has_offline},
+            }
+            if has_offline:
+                res_dict["offline"] = True
+                res_dict["error"] = "device_offline"
+            return UndoResultDict(res_dict)
 
         # 2. Single token undo
         receipt = self.undo_map.get(undo_token)

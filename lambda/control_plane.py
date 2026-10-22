@@ -587,29 +587,51 @@ class InMemoryDataStore(DataStore):
         self.pending_escalations: dict[str, dict[str, Any]] = {}
         self.preferences: dict[str, dict[str, Any]] = {}
 
-    def get_grants(self, user_id: str, tenant_id: str = "tenant_default") -> list[dict[str, Any]]:
-        return [g for g in self.grants.values() if g.get("user_id") == user_id and g.get("active", True)]
+    def get_grants(self, user_id: str, tenant_id: str | None = None) -> list[dict[str, Any]]:
+        return [
+            g for g in self.grants.values()
+            if g.get("user_id") == user_id
+            and g.get("active", True)
+            and (tenant_id is None or tenant_id == "tenant_default" or g.get("tenant_id") == tenant_id)
+        ]
 
     def save_grant(self, grant: dict[str, Any]) -> dict[str, Any]:
         gid = grant.get("grant_id") or f"grant_{uuid.uuid4().hex[:10]}"
         grant["grant_id"] = gid
+        if "tenant_id" not in grant:
+            grant["tenant_id"] = "tenant_default"
+        if "ttl" not in grant:
+            grant["ttl"] = int(grant.get("expires_at", time.time() + 86400 * 30))
         self.grants[gid] = grant
         return grant
 
     def revoke_grant(self, grant_id: str, user_id: str, tenant_id: str = "tenant_default") -> bool:
         grant = self.grants.get(grant_id)
-        if grant and grant.get("user_id") == user_id:
+        if (
+            grant
+            and grant.get("user_id") == user_id
+            and (tenant_id == "tenant_default" or grant.get("tenant_id", "tenant_default") == tenant_id)
+        ):
             grant["active"] = False
             grant["revoked_at"] = time.time()
             return True
         return False
 
-    def get_audit_records(self, user_id: str, tenant_id: str = "tenant_default", limit: int = 20) -> list[dict[str, Any]]:
-        records = [r for r in self.audit_records if r.get("user_id") == user_id]
+    def get_audit_records(self, user_id: str, tenant_id: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        records = [
+            r for r in self.audit_records
+            if r.get("user_id") == user_id
+            and (tenant_id is None or tenant_id == "tenant_default" or r.get("tenant_id") == tenant_id)
+        ]
         records.sort(key=lambda r: r.get("timestamp", 0), reverse=True)
         return records[:limit]
 
     def record_audit(self, record: dict[str, Any]) -> dict[str, Any]:
+        if "tenant_id" not in record:
+            record["tenant_id"] = "tenant_default"
+        if "ttl" not in record:
+            now = record.get("timestamp", time.time())
+            record["ttl"] = int(now + 86400 * 90)
         self.audit_records.append(record)
         return record
 
@@ -789,9 +811,14 @@ class InMemoryDataStore(DataStore):
         return False
 
     def get_focus_session(self, user_id: str, session_id: str) -> dict[str, Any] | None:
-        return self.sessions.get(session_id)
+        sess = self.sessions.get(session_id)
+        if sess and sess.get("user_id") == user_id:
+            return sess
+        return None
 
     def save_focus_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        if "ttl" not in session:
+            session["ttl"] = int(session.get("expires_at", time.time() + 86400 * 30))
         self.sessions[session["session_id"]] = session
         return session
 
@@ -1599,12 +1626,15 @@ def handle_reset_guardrail(body: dict[str, Any], store: InMemoryDataStore = defa
     return _json_resp(200, {"reset": True, "user_id": user_id, "action_type": action_type})
 
 
-def handle_query_audit(user_id: str, limit: int = 20, store: Any = default_store, tenant_id: str = "tenant_default") -> dict[str, Any]:
+def handle_query_audit(user_id: str, limit: int = 20, store: Any = default_store, tenant_id: str | None = None) -> dict[str, Any]:
     try:
         if hasattr(store, "get_audit_records"):
             records = store.get_audit_records(user_id, tenant_id=tenant_id, limit=limit)
         else:
-            records = [r for r in getattr(store, "audit_records", []) if r.get("user_id") == user_id]
+            records = [
+                r for r in getattr(store, "audit_records", [])
+                if r.get("user_id") == user_id and (tenant_id is None or r.get("tenant_id", "tenant_default") == tenant_id)
+            ]
             records.sort(key=lambda r: r.get("timestamp", 0), reverse=True)
             records = records[:limit]
     except StorageError as exc:
@@ -2481,15 +2511,32 @@ def handle_slack_admin_review(body: dict[str, Any], store: InMemoryDataStore = d
         return _json_resp(400, {"error": "admin_review_failed", "message": str(exc)})
 
 
-def handle_export_user_data(user_id: str, store: InMemoryDataStore = default_store) -> dict[str, Any]:
+def handle_export_user_data(user_id: str, store: Any = default_store, tenant_id: str | None = None) -> dict[str, Any]:
     """Privacy export: full user profile, grants, sessions, bank, and audit records with zero transcript leakage."""
-    user_grants = [g for g in store.grants.values() if g.get("user_id") == user_id]
-    user_sessions = [s for s in store.sessions.values() if s.get("user_id") == user_id]
-    user_audit = [a for a in store.audit_records if a.get("user_id") == user_id]
-    bank = store.deep_work_banks.get(user_id, {"balance": 0, "transactions": []})
-    signals = list(store.signal_consents.get(user_id, set()))
-    guardrails = store.undo_guardrail.get_metrics_summary(user_id)
-    slack_status = store.slack_adapter.active_statuses.get(user_id)
+    if hasattr(store, "get_grants"):
+        user_grants = store.get_grants(user_id, tenant_id=tenant_id)
+    else:
+        user_grants = [
+            g for g in getattr(store, "grants", {}).values()
+            if g.get("user_id") == user_id and (tenant_id is None or g.get("tenant_id", "tenant_default") == tenant_id)
+        ]
+
+    user_sessions = [
+        s for s in getattr(store, "sessions", {}).values()
+        if s.get("user_id") == user_id
+    ]
+
+    if hasattr(store, "get_audit_records"):
+        user_audit = store.get_audit_records(user_id, tenant_id=tenant_id, limit=1000)
+    else:
+        user_audit = [
+            a for a in getattr(store, "audit_records", [])
+            if a.get("user_id") == user_id and (tenant_id is None or a.get("tenant_id", "tenant_default") == tenant_id)
+        ]
+    bank = getattr(store, "deep_work_banks", {}).get(user_id, {"balance": 0, "transactions": []})
+    signals = list(getattr(store, "signal_consents", {}).get(user_id, set()))
+    guardrails = store.undo_guardrail.get_metrics_summary(user_id) if hasattr(store, "undo_guardrail") else {}
+    slack_status = getattr(store.slack_adapter, "active_statuses", {}).get(user_id) if hasattr(store, "slack_adapter") else None
     slack_data = {
         "status_text": slack_status.status_text,
         "status_emoji": slack_status.status_emoji,
@@ -2502,6 +2549,7 @@ def handle_export_user_data(user_id: str, store: InMemoryDataStore = default_sto
         200,
         {
             "user_id": user_id,
+            "tenant_id": tenant_id,
             "exported_at": time.time(),
             "privacy_standard": "ZERO_RAW_TRANSCRIPTS_RETAINED",
             "consent_grants": user_grants,
@@ -3328,7 +3376,7 @@ def lambda_handler(
 
     if path == "/api/v1/audit/actions" and http_method == "GET":
         user_id = query_params.get("user_id", "")
-        tenant_id = query_params.get("tenant_id", "tenant_default")
+        tenant_id = query_params.get("tenant_id")
         limit = int(query_params.get("limit", 20))
         return handle_query_audit(user_id, limit=limit, store=store, tenant_id=tenant_id)
 
@@ -3337,9 +3385,10 @@ def lambda_handler(
 
     if path == "/api/v1/user/export" and http_method == "GET":
         user_id = query_params.get("user_id", "")
+        tenant_id = query_params.get("tenant_id")
         if not user_id:
             return _json_resp(400, {"error": "missing_query_param", "message": "user_id is required"})
-        return handle_export_user_data(user_id, store=store)
+        return handle_export_user_data(user_id, store=store, tenant_id=tenant_id)
 
     if path == "/api/v1/user/data" and http_method == "DELETE":
         user_id = query_params.get("user_id", "")

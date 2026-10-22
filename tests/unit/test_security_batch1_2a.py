@@ -31,6 +31,8 @@ handle_undo_action = cp.handle_undo_action
 handle_focus_signal = cp.handle_focus_signal
 handle_publish_slack_status = cp.handle_publish_slack_status
 
+from standalone_agent.device_adapter import DeviceInfo, DeviceSimulatorAdapter
+
 
 class MockDynamoTable:
     """Minimal mock DynamoDB table; can be set to fail on any write."""
@@ -824,3 +826,190 @@ def test_fail_undo_increments_retry_count_consistently():
     dyn_store.fail_undo(tok_dyn, "usr_1", "owner_dyn", error_reason="test_dyn_fail")
     assert dyn_store.undo_records[tok_dyn]["status"] == "FAILED"
     assert dyn_store.undo_records[tok_dyn]["retry_count"] == 2
+
+
+# ===========================================================================
+# Overnight Verification Regressions: Batch Offline, Tenancy & Schema
+# ===========================================================================
+
+def test_batch_device_undo_offline_truthful_failure():
+    """Batch undo with an offline sub-device must truthfully report device_offline and HTTP 502."""
+    store = InMemoryDataStore()
+    user_id = "usr_batch_offline_01"
+    tenant_id = "tenant_test_batch"
+
+    # Register two devices online
+    dev1 = DeviceInfo(
+        device_id="dev_speaker_online",
+        name="Speaker Online",
+        device_type="fire_tv",
+        capabilities={"transport_control", "pause_playback", "resume_playback"},
+        state="playing",
+        is_online=True,
+    )
+    dev2 = DeviceInfo(
+        device_id="dev_speaker_offline",
+        name="Speaker Offline",
+        device_type="fire_tv",
+        capabilities={"transport_control", "pause_playback", "resume_playback"},
+        state="playing",
+        is_online=True,
+    )
+    store.device_adapter.register_device(dev1)
+    store.device_adapter.register_device(dev2)
+
+    # Execute batch of pause commands while both are online
+    batch_res = store.device_adapter.execute_batch([
+        {"device_id": "dev_speaker_online", "action": "request_pause"},
+        {"device_id": "dev_speaker_offline", "action": "request_pause"},
+    ])
+    batch_undo_token = batch_res["batch_undo_token"]
+    assert len(store.device_adapter.batch_undo_map[batch_undo_token]) == 2
+
+    # Now dev2 goes offline / loses network connectivity
+    dev2.is_online = False
+
+    # Undo execution directly on adapter must indicate offline failure
+    undo_res = store.device_adapter.execute_undo(batch_undo_token)
+    assert undo_res["success"] is False
+    assert undo_res.get("offline") is True
+    assert undo_res.get("error") == "device_offline"
+
+    # Persist durable undo record for the batch action
+    store.undo_records[batch_undo_token] = {
+        "token": batch_undo_token,
+        "undo_token": batch_undo_token,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "action_type": "request_pause",
+        "target_device": "dev_speaker_offline",
+        "status": "PENDING",
+        "created_at": time.time(),
+        "expires_at": time.time() + 3600,
+        "retry_count": 0,
+    }
+
+    # Calling handle_undo_action must return 502 with truthful device_reversal_failed
+    http_resp = handle_undo_action({
+        "undo_token": batch_undo_token,
+        "user_id": user_id,
+        "tenant_id": tenant_id,
+    }, store=store)
+
+    assert http_resp["statusCode"] == 502
+    body = json.loads(http_resp["body"])
+    assert body["success"] is False
+    assert body["error"] == "device_reversal_failed"
+    assert body["retryable"] is True
+    assert "Device offline" in body["message"]
+
+
+def test_batch_device_undo_idempotent_recovery_when_device_online():
+    """Once an offline device reconnects, retrying the batch undo must succeed idempotently."""
+    adapter = DeviceSimulatorAdapter()
+    dev1 = DeviceInfo(
+        device_id="dev_recov_1",
+        name="Living Room TV",
+        device_type="fire_tv",
+        capabilities={"transport_control", "pause_playback", "resume_playback"},
+        state="playing",
+        is_online=True,
+    )
+    dev2 = DeviceInfo(
+        device_id="dev_recov_2",
+        name="Bedroom TV",
+        device_type="fire_tv",
+        capabilities={"transport_control", "pause_playback", "resume_playback"},
+        state="playing",
+        is_online=True,
+    )
+    adapter.register_device(dev1)
+    adapter.register_device(dev2)
+
+    batch_res = adapter.execute_batch([
+        {"device_id": "dev_recov_1", "action": "request_pause"},
+        {"device_id": "dev_recov_2", "action": "request_pause"},
+    ])
+    tok = batch_res["batch_undo_token"]
+    assert len(adapter.batch_undo_map[tok]) == 2
+
+    # dev2 loses connection
+    dev2.is_online = False
+
+    # Initial attempt fails because dev2 is offline
+    first_attempt = adapter.execute_undo(tok)
+    assert first_attempt["success"] is False
+    assert first_attempt.get("offline") is True
+
+    # Bring dev2 back online
+    dev2.is_online = True
+
+    # Retry must succeed idempotently without re-inverting dev1
+    retry_attempt = adapter.execute_undo(tok)
+    assert retry_attempt["success"] is True
+    assert dev1.state == "playing"
+    assert dev2.state == "playing"
+    retry_attempt = adapter.execute_undo(tok)
+    assert retry_attempt["success"] is True
+    assert dev1.state == "playing"
+    assert dev2.state == "playing"
+
+
+def test_inmemory_datastore_cross_tenant_isolation():
+    """InMemoryDataStore must isolate resources across non-default tenants."""
+    store = InMemoryDataStore()
+    user_id = "usr_tenant_iso_01"
+
+    # Save grant in tenant_alpha
+    store.save_grant({
+        "grant_id": "grant_alpha_1",
+        "user_id": user_id,
+        "tenant_id": "tenant_alpha",
+        "action_type": "request_pause",
+        "scope": "allow_always",
+        "active": True,
+    })
+
+    # Querying tenant_alpha finds the grant
+    alpha_grants = store.get_grants(user_id, tenant_id="tenant_alpha")
+    assert len(alpha_grants) == 1
+    assert alpha_grants[0]["grant_id"] == "grant_alpha_1"
+
+    # Querying tenant_beta returns empty (isolated)
+    beta_grants = store.get_grants(user_id, tenant_id="tenant_beta")
+    assert len(beta_grants) == 0
+
+    # Foreign tenant cannot revoke grant
+    assert store.revoke_grant("grant_alpha_1", user_id, tenant_id="tenant_beta") is False
+    assert len(store.get_grants(user_id, tenant_id="tenant_alpha")) == 1
+
+    # Rightful tenant successfully revokes grant
+    assert store.revoke_grant("grant_alpha_1", user_id, tenant_id="tenant_alpha") is True
+    assert len(store.get_grants(user_id, tenant_id="tenant_alpha")) == 0
+
+
+def test_inmemory_focus_session_user_isolation():
+    """InMemoryDataStore.get_focus_session must isolate sessions across distinct user IDs."""
+    store = InMemoryDataStore()
+    store.save_focus_session({
+        "session_id": "sess_alice_private",
+        "user_id": "usr_alice",
+        "status": "active",
+    })
+
+    # Alice accesses her own session
+    assert store.get_focus_session("usr_alice", "sess_alice_private") is not None
+
+    # Bob attempting to read Alice's session returns None
+    assert store.get_focus_session("usr_bob", "sess_alice_private") is None
+
+
+def test_dynamodb_schema_user_preferences_conformance():
+    """table_schema.json documents UserPreferences entity mapping matching single-table design."""
+    schema = _load_schema()
+    assert "UserPreferences" in schema["entities"]
+    pref_entity = schema["entities"]["UserPreferences"]
+    assert pref_entity["PK"] == "USER#{user_id}"
+    assert pref_entity["SK"] == "PREFERENCES"
+    assert "preferences" in pref_entity["attributes"]
+    assert "ttl" in pref_entity["attributes"]

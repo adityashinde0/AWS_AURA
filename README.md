@@ -13,7 +13,7 @@
 [![Nordic nRF5340](https://img.shields.io/badge/Nordic-nRF5340_BLE_5.3-00A9CE?logo=nordicsemiconductor&logoColor=white)](firmware/)
 [![React Native](https://img.shields.io/badge/React_Native-Expo_Bridge-61DAFB?logo=react&logoColor=black)](mobile/)
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Tests Passing](https://img.shields.io/badge/Tests-498_Passing_%28100%25_Verified%29-brightgreen?logo=pytest&logoColor=white)](tests/)
+[![Tests Passing](https://img.shields.io/badge/Tests-503_Passing_%28100%25_Verified%29-brightgreen?logo=pytest&logoColor=white)](tests/)
 [![Official Teaser](https://img.shields.io/badge/YouTube-Official_Teaser-FF0000?logo=youtube&logoColor=white)](https://youtu.be/TGYBgcJrPzw)
 [![Zero-Surveillance](https://img.shields.io/badge/Privacy-Zero--Surveillance_Certified-9cf)](docs/SECURITY_REVIEW_CERTIFICATION.md)
 [![Hardware Dossier PDF](https://img.shields.io/badge/Hardware_Dossier-PDF_Spec_6.35MB-red?logo=adobe-acrobat-reader&logoColor=white)](docs/hardware/AURA_ORBIT_HARDWARE_SPECIFICATION.pdf)
@@ -222,7 +222,7 @@ Project AURA is engineered to satisfy all five core pillars of the **AWS Well-Ar
   │     COST OPTIMIZATION     │     OPERATIONAL EXCELLENCE    │
   │  • Pay-per-Request Dynamo │  • Structured JSON Logging    │
   │  • 30-Day Automated TTL   │  • CloudWatch Insights Tracing│
-  │  • Serverless Scale-to-0  │  • 498 Automated Tests (100%) │
+  │  • Serverless Scale-to-0  │  • 503 Automated Tests (100%) │
   └───────────────────────────┴───────────────────────────────┘
 ```
 
@@ -230,7 +230,7 @@ Project AURA is engineered to satisfy all five core pillars of the **AWS Well-Ar
 2. **Reliability:** Multi-LLM failover (Bedrock + Watsonx), SQS Dead Letter Queues, DynamoDB Point-in-Time Recovery, deterministic circuit breaking.
 3. **Performance Efficiency:** Graviton ARM64 compute, sub-50ms WebSocket telemetry streaming, HTTP/2 Apple push dispatch, 420ms failover inference.
 4. **Cost Optimization:** 100% serverless scale-to-zero compute, DynamoDB On-Demand billing, automated 30-day TTL data retirement.
-5. **Operational Excellence:** Structured JSON logging, cross-service correlation IDs, automated CDK v2 synthesis, and 498 automated contract/unit tests (100% passing across the complete test suite).
+5. **Operational Excellence:** Structured JSON logging, cross-service correlation IDs, automated CDK v2 synthesis, and 503 automated contract/unit tests (100% passing across the complete test suite).
 
 ---
 
@@ -508,14 +508,14 @@ py -m pytest tests/contract/
 python -m standalone_agent.live_demo --auto
 ```
 
-### Verified Test Suite Reconciliation (498 Tests Passing)
+### Verified Test Suite Reconciliation (503 Tests Passing)
 
-* **Full Test Suite:** **498 Passed**, 0 Failures (100% pass rate in ~6.39s).
-* **Core Unit & Modernization Suite:** **489 Passed**, 0 Failures.
+* **Full Test Suite:** **503 Passed**, 0 Failures (100% pass rate in ~7.8s).
+* **Core Unit & Modernization Suite:** **494 Passed**, 0 Failures.
 * **AWS Integration & SDK Suite:** **9 Passed** (`test_bedrock_adapter.py`, `test_calendar_adapter.py`, `test_pre_meeting_e2e.py`).
 * **Test Suite Expansion & Invariants:**
   - **Durable Undo & Lease Fencing (`tests/unit/test_partial_undo_recovery.py`, 22 tests):** Validates atomic DynamoDB conditional lease acquisition, crash recovery, offline device honest failure handling, and stale-worker fencing.
-  - **Tenant Isolation & Security Safeguards (`tests/unit/test_security_batch1_2a.py`, `tests/unit/test_security_undo_durability.py`, `tests/unit/test_security_batch1.py`, 59 tests):** Validates fail-closed tenant verification, cross-tenant collision protection, RS256 token verification, and zero test-mode bypass in production/staging runtime.
+  - **Tenant Isolation & Security Safeguards (`tests/unit/test_security_batch1_2a.py`, `tests/unit/test_security_undo_durability.py`, `tests/unit/test_security_batch1.py`, 64 tests):** Validates fail-closed tenant verification, cross-tenant collision protection, batch device undo offline reporting, RS256 token verification, and zero test-mode bypass in production/staging runtime.
   - **Multi-LLM & Backend Reliability (`tests/unit/test_reliability_regressions.py`):** Enforces strict anti-hallucination subset bounds, Bedrock to Watsonx failover, and EventBridge event contracts.
 
 ### Key Verification Areas

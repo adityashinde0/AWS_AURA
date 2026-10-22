@@ -78,6 +78,16 @@
         "ttl": "number"
       }
     },
+    "UserPreferences": {
+      "PK": "USER#{user_id}",
+      "SK": "PREFERENCES",
+      "attributes": {
+        "userId": "string (partition key identifier)",
+        "preferences": "object (adaptive notification, quiet hours, and briefing controls)",
+        "updated_at": "number (epoch seconds)",
+        "ttl": "number (DynamoDB TTL, 365 days default)"
+      }
+    },
     "UndoRecord": {
       "PK": "UNDO#{undo_token}",
       "SK": "RECORD",

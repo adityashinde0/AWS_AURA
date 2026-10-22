@@ -47,12 +47,14 @@ All required Batch 1.2A architectural, security, and reliability remediations ha
    - [`schemas/dynamodb/table_schema.json`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/schemas/dynamodb/table_schema.json) defines the `UndoRecord` entity with partition key `UNDO#{undo_token}`, sort key `RECORD`, and full attribute definitions (`completedAt`, `failedReason`, `retry_count`, `required_reversals`, `completed_reversals`, `uncertain_reversals`, and `ttl`).
 
 ### 2.2 Defects Found & Fixes Made Tonight
-- **Offline Device Undo Failure Handling:** In [`standalone_agent/device_adapter.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/standalone_agent/device_adapter.py), `execute_undo` was previously restoring device state and marking receipt undone even when `device.is_online == False`. Fixed to check `if device and not device.is_online:` and return `{"success": False, "error": "device_offline", "offline": True}`, allowing [`lambda/control_plane.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/control_plane.py) to return honest HTTP 502 `device_reversal_failed` without consuming the token.
+- **Offline Device Undo Failure Handling:** In [`standalone_agent/device_adapter.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/standalone_agent/device_adapter.py), `execute_undo` was previously restoring device state and marking receipt undone even when `device.is_online == False`. Fixed both single-device and batch undo (`batch_undo_map`) paths to check `if device and not device.is_online:` and return `{"success": False, "error": "device_offline", "offline": True}`, allowing [`lambda/control_plane.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/control_plane.py) to return honest HTTP 502 `device_reversal_failed` with `retryable: True` without consuming the token.
 - **Cross-Tenant Lease Overwrite Protection:** In [`lambda/control_plane.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/control_plane.py), hardened the DynamoDB `acquire_undo_lease` `ConditionExpression` so that when `existing` is not cached at read time, `attribute_not_exists(PK)` is combined with strict `(userId = :uid OR user_id = :uid) AND (tenantId = :tid OR tenant_id = :tid)` enforcement, eliminating any cross-tenant lease overwrite or claiming race condition.
-- **TTL & Lease Expiry Parity in InMemoryDataStore:** Added `"ttl"` (`int(now + 86400 * 30)`) to [`InMemoryDataStore.save_undo_record`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/control_plane.py) and `acquire_undo_lease`, matching DynamoDB schema, and ensured `complete_undo` updates `leaseExpiresAt = int(now)`.
+- **Multi-Tenant Boundary Isolation & TTL Parity in InMemoryDataStore:** In [`lambda/control_plane.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/control_plane.py), updated `get_grants`, `revoke_grant`, and `get_audit_records` to enforce tenant boundary checks (`tenant_id == "tenant_default"` falls back safely while tenant-specific queries strictly fail closed on cross-tenant requests). Added TTL parity (`ttl` attribute) across `save_grant`, `record_audit`, and `save_focus_session`, and enforced user isolation in `get_focus_session`.
+- **User Preferences Schema & Client Response Integrity:** Added `UserPreferences` entity mapping to [`schemas/dynamodb/table_schema.json`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/schemas/dynamodb/table_schema.json) and hardened `handle_export_user_data` in [`lambda/control_plane.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/control_plane.py) to preserve strict compliance with [`schemas/websocket/user_preferences.json`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/schemas/websocket/user_preferences.json).
+- **CDK Table Construct Modernization:** Updated `AuraCoreTable` in [`infra/lib/aura-cloud-intake-stack.ts`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/infra/lib/aura-cloud-intake-stack.ts) from deprecated `pointInTimeRecovery: true` to `pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true }`, achieving 0 deprecation warnings and 125 synthesized resources in `npx cdk synth`.
 - **Operational Observability:** Added warning log `undo_fail_transition_failed` if `store.fail_undo` returns False in [`lambda/control_plane.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/lambda/control_plane.py).
 - **Comprehensive Dev Dependencies:** Added `pydantic>=2.9.0`, `cryptography>=42.0.0`, `requests>=2.32.0`, and `httpx>=0.27.0` to [`requirements-dev.txt`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/requirements-dev.txt).
-- **Added Regression Tests:** 3 new test scenarios in [`tests/unit/test_partial_undo_recovery.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/tests/unit/test_partial_undo_recovery.py) (Scenarios 19, 20, 21), bringing the suite from 19 to 22 tests.
+- **Added Regression Tests:** Added 5 new regression tests in [`tests/unit/test_security_batch1_2a.py`](file:///c:/Users/Shind/OneDrive/Desktop/AURA/tests/unit/test_security_batch1_2a.py) covering batch offline device undo reporting, idempotent recovery when online, cross-tenant datastore isolation, focus session user isolation, and DynamoDB preferences schema conformance, bringing the suite from 498 to 503 tests.
 
 ---
 
@@ -63,11 +65,11 @@ All tests were executed against the active repository working tree using `py.exe
 | Suite / Test Target | Command | Result | Pass Rate | Execution Time |
 |---|---|---|---|---|
 | **Focused Partial Undo Recovery** | `py -m pytest tests/unit/test_partial_undo_recovery.py` | **22 passed** | 100% | 0.34s |
-| **Batch 1.2A Security Regression** | `py -m pytest tests/unit/test_security_batch1_2a.py` | 28 passed | 100% | 0.14s |
+| **Batch 1.2A Security Regression** | `py -m pytest tests/unit/test_security_batch1_2a.py` | **33 passed** | 100% | 0.16s |
 | **Security & Durability Suite** | `py -m pytest tests/unit/test_security_undo_durability.py tests/unit/test_security_batch1.py` | 31 passed | 100% | 0.22s |
-| **Standard Offline Suite (Excluded AWS SDK Files)** | `py -m pytest --ignore=tests/e2e/test_pre_meeting_e2e.py --ignore=tests/unit/test_bedrock_adapter.py --ignore=tests/unit/test_calendar_adapter.py` | **489 passed** | 100% | 3.32s |
+| **Standard Offline Suite (Excluded AWS SDK Files)** | `py -m pytest --ignore=tests/e2e/test_pre_meeting_e2e.py --ignore=tests/unit/test_bedrock_adapter.py --ignore=tests/unit/test_calendar_adapter.py` | **494 passed** | 100% | 3.45s |
 | **AWS SDK Test Files (Direct Run)** | `py -m pytest tests/e2e/test_pre_meeting_e2e.py tests/unit/test_bedrock_adapter.py tests/unit/test_calendar_adapter.py` | 9 passed | 100% | 0.25s |
-| **Full Repository Test Suite** | `py -m pytest` | **498 passed** | 100% | 4.41s |
+| **Full Repository Test Suite** | `py -m pytest` | **503 passed** | 100% | 4.52s |
 
 *Failures:* 0
 *Regressions:* 0
@@ -126,7 +128,7 @@ This checklist defines the required actions, responsible roles, and measurable p
 | **S-04** | **Cognito RS256 Auth & Bypass Lockout** | Test `/api/v1/actions/undo` with valid Cognito JWT, expired JWT, and forged JWT in staging API Gateway. | Security Engineer | Valid RS256 JWT accepted (200); expired/forged JWT rejected (401/403); test bypass rejected when `AWS_LAMBDA_FUNCTION_NAME` is set. |
 | **S-05** | **Slack API Sandbox Integration** | Connect staging Lambda to dedicated Slack test workspace via OAuth PKCE. | Integration Engineer | Published status successfully cleared on undo; revoked/offline token returns 502 with `retryable: True`; no raw PII in CloudWatch logs. |
 | **S-06** | **Connected Devices Adapter** | Verify Echo/Fire TV media control via certified Alexa Skill & MediaSession endpoints. | IoT / Hardware Engineer | `request_pause` pauses playback; undo resumes playback; timeout triggers `uncertain_reversals` and query reconciliation. |
-| **S-07** | **Full AWS SDK Test Suite Run** | Run full test suite with `pip install -r requirements-dev.txt` in staging CI runner. | CI/CD Engineer | All 498 tests pass; 0 `ModuleNotFoundError: No module named 'boto3'` errors. |
+| **S-07** | **Full AWS SDK Test Suite Run** | Run full test suite with `pip install -r requirements-dev.txt` in staging CI runner. | CI/CD Engineer | All 503 tests pass; 0 `ModuleNotFoundError: No module named 'boto3'` errors. |
 
 ---
 

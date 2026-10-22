@@ -227,12 +227,12 @@ curl -s -X POST "${HTTP_API_URL}/api/v1/actions/undo" \
 
 | Gate ID | Area | Verification Criterion | Local Verification (Tonight) | Live AWS Staging Verification |
 |---|---|---|---|---|
-| **GATE-01** | **CDK Infrastructure** | Cloud Intake Stack synthesized and deployed with zero drift; KMS CMK active. | **COMPLETE** (Exit code 0, 125 CFN resources synthesized) | **NOT STARTED** (Awaiting AWS staging credentials & approval) |
+| **GATE-01** | **CDK Infrastructure** | Cloud Intake Stack synthesized with zero deprecation warnings; KMS CMK active. | **COMPLETE** (Exit code 0, 125 CFN resources, 0 deprecation warnings) | **NOT STARTED** (Awaiting AWS staging credentials & approval) |
 | **GATE-02** | **DynamoDB Leases** | Concurrent workers receive 409; zero overwrites; retry counter increments. | **COMPLETE** (Verified in `test_partial_undo_recovery.py` & `test_dynamodb_persistence.py`) | **NOT STARTED** (Awaiting live DynamoDB table execution) |
 | **GATE-03** | **Cognito Auth** | RS256 token verification enforced; test bypass rejected in Lambda environment. | **COMPLETE** (Verified in `test_auth_enforcement.py` & `test_security_batch1_2a.py`) | **NOT STARTED** (Awaiting live Cognito User Pool issuance) |
 | **GATE-04** | **Slack Integration** | OAuth PKCE token exchange stored in Secrets Manager; status published and cleared. | **COMPLETE** (Verified in `test_slack_adapter.py`) | **NOT STARTED** (Awaiting live Slack workspace & Secrets Manager) |
-| **GATE-05** | **Reconciliation** | Blind retries blocked after ambiguous timeout; authoritative state query checked. | **COMPLETE** (Verified in `test_partial_undo_recovery.py`) | **NOT STARTED** (Awaiting live device network testing) |
-| **GATE-06** | **Test Suite** | Full 498-test suite passes against staging environment. | **COMPLETE** (498/498 Passed in 6.39s) | **NOT STARTED** (Awaiting live staging runner) |
+| **GATE-05** | **Reconciliation** | Blind retries blocked after ambiguous timeout; authoritative state query checked. | **COMPLETE** (Verified in `test_partial_undo_recovery.py` & `test_security_batch1_2a.py`) | **NOT STARTED** (Awaiting live device network testing) |
+| **GATE-06** | **Test Suite** | Full test suite passes against environment. | **COMPLETE** (503/503 Passed in 7.82s) | **NOT STARTED** (Awaiting live staging runner) |
 
 ---
 
